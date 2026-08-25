@@ -1,0 +1,119 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#F5F0E4">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="24dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center_horizontal"
+            android:text="MesaCerta"
+            android:textColor="#1F3B2C"
+            android:textSize="32sp"
+            android:textStyle="italic|bold"
+            android:layout_marginBottom="4dp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center_horizontal"
+            android:text="Impressão Automática"
+            android:textColor="#5C5648"
+            android:textSize="15sp"
+            android:layout_marginBottom="28dp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Impressora Bluetooth:"
+            android:textColor="#2B2620"
+            android:textSize="14sp"
+            android:textStyle="bold"
+            android:layout_marginBottom="6dp" />
+
+        <Spinner
+            android:id="@+id/spinnerImpressora"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="#FFFFFF"
+            android:padding="12dp"
+            android:layout_marginBottom="20dp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Nome do restaurante (slug):"
+            android:textColor="#2B2620"
+            android:textSize="14sp"
+            android:textStyle="bold"
+            android:layout_marginBottom="6dp" />
+
+        <EditText
+            android:id="@+id/campoSlug"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="#FFFFFF"
+            android:hint="ex: boteco-do-ze"
+            android:inputType="text"
+            android:padding="14dp"
+            android:textColor="#2B2620"
+            android:layout_marginBottom="28dp" />
+
+        <Button
+            android:id="@+id/botaoLigar"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="#1F3B2C"
+            android:text="LIGAR IMPRESSÃO"
+            android:textColor="#FFFFFF"
+            android:textSize="17sp"
+            android:textStyle="bold"
+            android:padding="18dp"
+            android:layout_marginBottom="24dp" />
+
+        <TextView
+            android:id="@+id/textoStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="#FAF7EF"
+            android:text="○ Desligado"
+            android:textColor="#1F3B2C"
+            android:textSize="15sp"
+            android:padding="16dp"
+            android:layout_marginBottom="28dp" />
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:background="#E1D7BD"
+            android:layout_marginBottom="20dp" />
+
+        <TextView
+            android:id="@+id/textoAvisoBateria"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Para funcionar mesmo com a tela apagada, desative a economia de bateria para este app:"
+            android:textColor="#5C5648"
+            android:textSize="13sp"
+            android:layout_marginBottom="12dp" />
+
+        <Button
+            android:id="@+id/botaoBateria"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="#C8952B"
+            android:text="Configurar bateria"
+            android:textColor="#1F3B2C"
+            android:textSize="14sp"
+            android:textStyle="bold"
+            android:padding="14dp" />
+
+    </LinearLayout>
+</ScrollView>
