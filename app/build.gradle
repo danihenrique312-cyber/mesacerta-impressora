@@ -15,10 +15,28 @@ android {
         versionName "1.0"
     }
 
+    signingConfigs {
+        release {
+            // Só usa a chave se ela existir (na compilação da Play Store).
+            // Nas compilações de teste, essa parte é ignorada.
+            def chaveArquivo = file("chave-release.jks")
+            if (chaveArquivo.exists()) {
+                storeFile chaveArquivo
+                storePassword System.getenv("KEYSTORE_SENHA") ?: ""
+                keyAlias System.getenv("KEY_ALIAS") ?: ""
+                keyPassword System.getenv("KEY_SENHA") ?: ""
+            }
+        }
+    }
+
     buildTypes {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            def chaveArquivo = file("chave-release.jks")
+            if (chaveArquivo.exists()) {
+                signingConfig signingConfigs.release
+            }
         }
         debug {
             applicationIdSuffix ".debug"
