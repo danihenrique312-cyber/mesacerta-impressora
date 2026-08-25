@@ -1,0 +1,43 @@
+name: Gerar versao Play Store (AAB)
+
+# Roda só quando você aciona manualmente pelo botão
+on:
+  workflow_dispatch:
+
+jobs:
+  build-aab:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Baixar o código
+        uses: actions/checkout@v4
+
+      - name: Preparar o Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Preparar o Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Recriar a chave de assinatura a partir do segredo
+        run: |
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > app/chave-release.jks
+
+      - name: Dar permissão ao gradlew
+        run: chmod +x ./gradlew
+
+      - name: Compilar o AAB assinado (produção)
+        env:
+          KEYSTORE_SENHA: ${{ secrets.KEYSTORE_SENHA }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_SENHA: ${{ secrets.KEY_SENHA }}
+        run: ./gradlew bundleRelease --stacktrace
+
+      - name: Guardar o AAB pronto para a Play Store
+        uses: actions/upload-artifact@v4
+        with:
+          name: MesaCerta-Impressora-AAB-PlayStore
+          path: app/build/outputs/bundle/release/app-release.aab
+          if-no-files-found: error
