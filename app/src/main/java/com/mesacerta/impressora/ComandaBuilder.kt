@@ -21,6 +21,9 @@ object ComandaBuilder {
         // Reset da impressora
         out.write(byteArrayOf(ESC.toByte(), '@'.code.toByte()))
 
+        // Aumenta o espaçamento entre as linhas (deixa tudo mais "arejado")
+        out.write(byteArrayOf(ESC.toByte(), '3'.code.toByte(), 45))
+
         // Centralizado + tamanho dobrado para a mesa
         out.write(byteArrayOf(ESC.toByte(), 'a'.code.toByte(), 1)) // centraliza
         out.write(byteArrayOf(GS.toByte(), '!'.code.toByte(), 0x11)) // altura+largura dobradas
@@ -32,9 +35,11 @@ object ComandaBuilder {
         escreverLinha(out, "-".repeat(LARGURA))
 
         for (item in pedido.itens) {
-            // Nome do item em negrito
+            // Nome do item: negrito + letra maior (altura dobrada)
             out.write(byteArrayOf(ESC.toByte(), 'E'.code.toByte(), 1)) // negrito on
+            out.write(byteArrayOf(GS.toByte(), '!'.code.toByte(), 0x01)) // letra maior
             escreverLinha(out, "${item.quantidade}x ${item.nome}")
+            out.write(byteArrayOf(GS.toByte(), '!'.code.toByte(), 0x00)) // volta ao normal
             out.write(byteArrayOf(ESC.toByte(), 'E'.code.toByte(), 0)) // negrito off
 
             // Variações (ex: ponto da carne, sem cebola)
@@ -45,6 +50,9 @@ object ComandaBuilder {
             if (item.observacao.isNotBlank()) {
                 escreverLinha(out, "  obs: ${item.observacao}")
             }
+
+            // Espaço extra entre um item e outro
+            escreverLinha(out, "")
         }
 
         escreverLinha(out, "-".repeat(LARGURA))
