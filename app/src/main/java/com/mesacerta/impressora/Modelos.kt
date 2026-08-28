@@ -13,6 +13,7 @@ data class Pedido(
 data class ItemPedido(
     val quantidade: Int,
     val nome: String,
+    val preco: Double = 0.0,
     val variacoes: Map<String, String> = emptyMap(),
     val observacao: String = ""
 )
