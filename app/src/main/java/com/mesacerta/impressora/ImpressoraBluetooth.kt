@@ -48,11 +48,14 @@ class ImpressoraBluetooth(private val enderecoMac: String) {
         // Tenta conectar (com uma segunda tentativa via método reflexivo se a primeira falhar)
         return try {
             conectar(dispositivo)
-            for (dados in listaDados) {
+            for ((indice, dados) in listaDados.withIndex()) {
                 saida?.write(dados)
                 saida?.flush()
-                // Pequena pausa pra impressora processar/cortar antes da próxima via
-                Thread.sleep(1800)
+                // Pausa longa entre as vias, pra impressora terminar de cortar o
+                // papel sem perder dados da próxima via (não pausa após a última).
+                if (indice < listaDados.size - 1) {
+                    Thread.sleep(30000)
+                }
             }
             ResultadoImpressao.Sucesso
         } catch (e: Exception) {
