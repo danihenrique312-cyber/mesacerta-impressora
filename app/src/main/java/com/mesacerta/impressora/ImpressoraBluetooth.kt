@@ -52,7 +52,7 @@ class ImpressoraBluetooth(private val enderecoMac: String) {
                 saida?.write(dados)
                 saida?.flush()
                 // Pequena pausa pra impressora processar/cortar antes da próxima via
-                Thread.sleep(500)
+                Thread.sleep(1800)
             }
             ResultadoImpressao.Sucesso
         } catch (e: Exception) {
