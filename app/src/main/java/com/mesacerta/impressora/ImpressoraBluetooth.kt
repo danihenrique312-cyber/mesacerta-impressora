@@ -24,7 +24,14 @@ class ImpressoraBluetooth(private val enderecoMac: String) {
     private var saida: OutputStream? = null
 
     @SuppressLint("MissingPermission")
-    fun imprimir(dados: ByteArray): ResultadoImpressao {
+    fun imprimir(dados: ByteArray): ResultadoImpressao = imprimirVarias(listOf(dados))
+
+    /**
+     * Imprime várias "vias" (comandas separadas) numa única conexão com a impressora —
+     * usado pra sair a via da cozinha e a via do caixa uma atrás da outra.
+     */
+    @SuppressLint("MissingPermission")
+    fun imprimirVarias(listaDados: List<ByteArray>): ResultadoImpressao {
         val adapter = BluetoothAdapter.getDefaultAdapter()
             ?: return ResultadoImpressao.Erro("Bluetooth não disponível neste aparelho")
 
@@ -41,10 +48,12 @@ class ImpressoraBluetooth(private val enderecoMac: String) {
         // Tenta conectar (com uma segunda tentativa via método reflexivo se a primeira falhar)
         return try {
             conectar(dispositivo)
-            saida?.write(dados)
-            saida?.flush()
-            // Pequena pausa pra impressora processar antes de fechar
-            Thread.sleep(400)
+            for (dados in listaDados) {
+                saida?.write(dados)
+                saida?.flush()
+                // Pequena pausa pra impressora processar/cortar antes da próxima via
+                Thread.sleep(500)
+            }
             ResultadoImpressao.Sucesso
         } catch (e: Exception) {
             Log.e(TAG, "Falha ao imprimir", e)
