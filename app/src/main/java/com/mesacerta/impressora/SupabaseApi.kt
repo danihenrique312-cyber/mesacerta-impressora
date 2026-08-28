@@ -26,7 +26,7 @@ class SupabaseApi {
         // Monta a query com os relacionamentos (mesa + itens)
         val select = "id,criado_em," +
             "comandas!inner(mesas!inner(numero))," +
-            "itens_pedido(quantidade,variacoes_escolhidas,observacao,itens_cardapio(nome))"
+            "itens_pedido(quantidade,variacoes_escolhidas,observacao,itens_cardapio(nome,preco))"
 
         val url = "${Config.SUPABASE_URL}/rest/v1/pedidos" +
             "?id=eq.$idPedido" +
@@ -68,6 +68,7 @@ class SupabaseApi {
             val it = itensArray.getJSONObject(i)
             val cardapio = it.optJSONObject("itens_cardapio")
             val nome = cardapio?.optString("nome") ?: "Item"
+            val preco = cardapio?.optDouble("preco") ?: 0.0
             val qtd = it.optInt("quantidade", 1)
 
             // Variações (pode ser null)
@@ -82,7 +83,7 @@ class SupabaseApi {
             }
 
             val obs = it.optString("observacao", "")
-            itens.add(ItemPedido(qtd, nome, variacoes, if (obs == "null") "" else obs))
+            itens.add(ItemPedido(qtd, nome, preco, variacoes, if (obs == "null") "" else obs))
         }
 
         return Pedido(
