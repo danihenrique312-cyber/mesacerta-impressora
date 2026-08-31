@@ -25,7 +25,7 @@ class SupabaseApi {
     fun buscarPedido(idPedido: String): Pedido? {
         // Monta a query com os relacionamentos (mesa + itens)
         val select = "id,criado_em," +
-            "comandas!inner(nome_cliente,telefone_cliente,mesas!inner(numero))," +
+            "comandas!inner(nome_cliente,telefone_cliente,mesas!inner(numero,restaurantes!inner(imprimir_duas_vias)))," +
             "itens_pedido(quantidade,variacoes_escolhidas,observacao,itens_cardapio(nome,preco))"
 
         val url = "${Config.SUPABASE_URL}/rest/v1/pedidos" +
@@ -60,6 +60,8 @@ class SupabaseApi {
         val comandas = obj.optJSONObject("comandas")
         val mesa = comandas?.optJSONObject("mesas")
         val mesaNumero = mesa?.optString("numero") ?: "?"
+        val restauranteObj = mesa?.optJSONObject("restaurantes")
+        val imprimirDuasVias = restauranteObj?.optBoolean("imprimir_duas_vias", true) ?: true
         val nomeClienteBruto = comandas?.optString("nome_cliente") ?: ""
         val nomeCliente = if (nomeClienteBruto == "null") "" else nomeClienteBruto
         val telefoneClienteBruto = comandas?.optString("telefone_cliente") ?: ""
@@ -96,6 +98,7 @@ class SupabaseApi {
             criadoEm = obj.optString("criado_em"),
             nomeCliente = nomeCliente,
             telefoneCliente = telefoneCliente,
+            imprimirDuasVias = imprimirDuasVias,
             itens = itens
         )
     }
