@@ -34,14 +34,16 @@ object ComandaBuilder {
 
         escreverViaCozinha(out, pedido)
 
-        // Espaço extra entre as vias (sem cortar aqui)
-        repeat(LINHAS_ENTRE_VIAS) {
-            out.write('\n'.code)
+        // Só imprime a via do caixa se o restaurante tiver essa opção ligada
+        if (pedido.imprimirDuasVias) {
+            // Espaço extra entre as vias (sem cortar aqui)
+            repeat(LINHAS_ENTRE_VIAS) {
+                out.write('\n'.code)
+            }
+            escreverViaCaixa(out, pedido)
         }
 
-        escreverViaCaixa(out, pedido)
-
-        // Corte do papel só no final, depois das duas vias
+        // Corte do papel só no final
         out.write("\n\n\n".toByteArray(Charsets.ISO_8859_1))
         out.write(byteArrayOf(GS.toByte(), 'V'.code.toByte(), 0x00))
 
