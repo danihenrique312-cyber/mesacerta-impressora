@@ -7,6 +7,8 @@ data class Pedido(
     val id: String,
     val mesaNumero: String,
     val criadoEm: String,
+    val nomeCliente: String = "",
+    val telefoneCliente: String = "",
     val itens: List<ItemPedido>
 )
 
