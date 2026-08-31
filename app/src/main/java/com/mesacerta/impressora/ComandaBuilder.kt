@@ -6,9 +6,10 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * Monta as comandas no formato ESC/POS que a impressora térmica entende.
- * Gera DUAS vias separadas: uma pra cozinha (só os itens, sem preço)
- * e outra pro caixa (com preço de cada item e o total).
+ * Monta a comanda completa no formato ESC/POS: via da cozinha + via do caixa,
+ * numa tirinha CONTÍNUA (sem cortar no meio) — o corte só acontece no final,
+ * depois das duas vias. Isso evita perder dados por causa do tempo do corte
+ * mecânico da impressora.
  */
 object ComandaBuilder {
 
@@ -16,21 +17,42 @@ object ComandaBuilder {
     private const val GS = 0x1D
     private const val LARGURA = 32 // caracteres por linha (Bematech fonte A, ESC/POS)
 
-    /**
-     * Monta as duas vias prontas pra imprimir, nessa ordem: [cozinha, caixa].
-     */
-    fun montarDuasVias(pedido: Pedido): List<ByteArray> {
-        return listOf(montarViaCozinha(pedido), montarViaCaixa(pedido))
-    }
+    // Linhas em branco extras entre uma via e outra (~2cm a mais de espaço,
+    // pra facilitar destacar as vias na mão).
+    private const val LINHAS_ENTRE_VIAS = 6
 
     /**
-     * Via da cozinha: só os itens e observações, sem preço — é só pra saber o que fazer.
+     * Monta a comanda inteira (as duas vias) pronta pra mandar pra impressora
+     * numa única chamada.
      */
-    private fun montarViaCozinha(pedido: Pedido): ByteArray {
+    fun montarComanda(pedido: Pedido): ByteArray {
         val out = ByteArrayOutputStream()
+
+        // Reset da impressora — só uma vez, no início de tudo
         out.write(byteArrayOf(ESC.toByte(), '@'.code.toByte()))
         out.write(byteArrayOf(ESC.toByte(), '3'.code.toByte(), 45))
 
+        escreverViaCozinha(out, pedido)
+
+        // Espaço extra entre as vias (sem cortar aqui)
+        repeat(LINHAS_ENTRE_VIAS) {
+            out.write('\n'.code)
+        }
+
+        escreverViaCaixa(out, pedido)
+
+        // Corte do papel só no final, depois das duas vias
+        out.write("\n\n\n".toByteArray(Charsets.ISO_8859_1))
+        out.write(byteArrayOf(GS.toByte(), 'V'.code.toByte(), 0x00))
+
+        return out.toByteArray()
+    }
+
+    /**
+     * Via da cozinha: itens e observações, sem preço — é só pra saber o que fazer.
+     * Também sai o nome e telefone do cliente, pra não ter dúvida de quem é.
+     */
+    private fun escreverViaCozinha(out: ByteArrayOutputStream, pedido: Pedido) {
         out.write(byteArrayOf(ESC.toByte(), 'a'.code.toByte(), 1))
         out.write(byteArrayOf(GS.toByte(), '!'.code.toByte(), 0x11))
         escreverLinha(out, "MESA ${pedido.mesaNumero}")
@@ -40,6 +62,7 @@ object ComandaBuilder {
         out.write(byteArrayOf(ESC.toByte(), 'E'.code.toByte(), 0))
 
         out.write(byteArrayOf(ESC.toByte(), 'a'.code.toByte(), 0))
+        escreverDadosCliente(out, pedido)
         escreverLinha(out, "-".repeat(LARGURA))
 
         for (item in pedido.itens) {
@@ -60,18 +83,13 @@ object ComandaBuilder {
 
         escreverLinha(out, "-".repeat(LARGURA))
         escreverLinha(out, horarioAgora())
-        finalizar(out)
-        return out.toByteArray()
     }
 
     /**
      * Via do caixa: itens com preço de cada um, mais o total do pedido — pra cobrança.
+     * Também sai o nome e telefone do cliente.
      */
-    private fun montarViaCaixa(pedido: Pedido): ByteArray {
-        val out = ByteArrayOutputStream()
-        out.write(byteArrayOf(ESC.toByte(), '@'.code.toByte()))
-        out.write(byteArrayOf(ESC.toByte(), '3'.code.toByte(), 45))
-
+    private fun escreverViaCaixa(out: ByteArrayOutputStream, pedido: Pedido) {
         out.write(byteArrayOf(ESC.toByte(), 'a'.code.toByte(), 1))
         out.write(byteArrayOf(GS.toByte(), '!'.code.toByte(), 0x11))
         escreverLinha(out, "MESA ${pedido.mesaNumero}")
@@ -81,6 +99,7 @@ object ComandaBuilder {
         out.write(byteArrayOf(ESC.toByte(), 'E'.code.toByte(), 0))
 
         out.write(byteArrayOf(ESC.toByte(), 'a'.code.toByte(), 0))
+        escreverDadosCliente(out, pedido)
         escreverLinha(out, "-".repeat(LARGURA))
 
         var total = 0.0
@@ -98,8 +117,18 @@ object ComandaBuilder {
         out.write(byteArrayOf(ESC.toByte(), 'E'.code.toByte(), 0))
         escreverLinha(out, "-".repeat(LARGURA))
         escreverLinha(out, horarioAgora())
-        finalizar(out)
-        return out.toByteArray()
+    }
+
+    /**
+     * Escreve o nome e telefone do cliente, se tiverem sido informados.
+     */
+    private fun escreverDadosCliente(out: ByteArrayOutputStream, pedido: Pedido) {
+        if (pedido.nomeCliente.isNotBlank()) {
+            escreverLinha(out, "Cliente: ${pedido.nomeCliente}")
+        }
+        if (pedido.telefoneCliente.isNotBlank()) {
+            escreverLinha(out, "Tel: ${pedido.telefoneCliente}")
+        }
     }
 
     private fun horarioAgora(): String =
@@ -115,16 +144,10 @@ object ComandaBuilder {
     private fun montarLinhaComPrecoAlinhado(esquerda: String, direita: String): String {
         val espacoDisponivel = LARGURA - direita.length
         return if (esquerda.length >= espacoDisponivel) {
-            // Nome muito grande: quebra em duas linhas
             "$esquerda\n" + " ".repeat((LARGURA - direita.length).coerceAtLeast(0)) + direita
         } else {
             esquerda + " ".repeat(espacoDisponivel - esquerda.length) + direita
         }
-    }
-
-    private fun finalizar(out: ByteArrayOutputStream) {
-        out.write("\n\n\n".toByteArray(Charsets.ISO_8859_1))
-        out.write(byteArrayOf(GS.toByte(), 'V'.code.toByte(), 0x00))
     }
 
     /**
