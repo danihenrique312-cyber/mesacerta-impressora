@@ -9,6 +9,7 @@ data class Pedido(
     val criadoEm: String,
     val nomeCliente: String = "",
     val telefoneCliente: String = "",
+    val imprimirDuasVias: Boolean = true,
     val itens: List<ItemPedido>
 )
 
