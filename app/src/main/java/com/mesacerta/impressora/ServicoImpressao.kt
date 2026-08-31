@@ -82,8 +82,8 @@ class ServicoImpressao : Service() {
                     return@Thread
                 }
 
-                val vias = ComandaBuilder.montarDuasVias(pedido)
-                val resultado = impressora?.imprimirVarias(vias)
+                val dados = ComandaBuilder.montarComanda(pedido)
+                val resultado = impressora?.imprimir(dados)
 
                 when (resultado) {
                     is ResultadoImpressao.Sucesso -> {
