@@ -12,11 +12,13 @@ import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import org.json.JSONObject
 
 /**
  * O coração do app: fica rodando SEMPRE em segundo plano.
- * - Escuta pedidos novos no banco (mesmo com a tela apagada)
- * - Quando chega um, busca os detalhes e manda pra impressora sozinho
+ * - Escuta pedidos novos no banco (mesmo com a tela apagada) → impressão automática
+ * - Escuta solicitações de impressão manual vindas do site (imprimir comanda
+ *   completa, ou reimprimir um pedido específico que não saiu)
  * - Mantém uma notificação fixa (exigência do Android para serviços que rodam sempre)
  */
 class ServicoImpressao : Service() {
@@ -60,14 +62,28 @@ class ServicoImpressao : Service() {
 
         impressora = ImpressoraBluetooth(macImpressora)
 
-        realtime = SupabaseRealtime(
-            restauranteSlug = slug,
-            onPedidoNovo = { idPedido -> processarPedido(idPedido) },
-            onStatus = { status -> atualizarStatus(status) }
-        )
-        realtime?.conectar()
+        // Descobrir o ID do restaurante é uma chamada de rede, então roda numa thread
+        // separada pra não travar o serviço.
+        Thread {
+            val restauranteId = api.buscarRestauranteIdPorSlug(slug)
+            if (restauranteId == null) {
+                atualizarStatus("Não encontrei o restaurante (confira o slug)")
+                return@Thread
+            }
+
+            realtime = SupabaseRealtime(
+                restauranteId = restauranteId,
+                onPedidoNovo = { idPedido -> processarPedido(idPedido) },
+                onSolicitacaoNova = { registro -> processarSolicitacao(registro) },
+                onStatus = { status -> atualizarStatus(status) }
+            )
+            realtime?.conectar()
+        }.start()
     }
 
+    /**
+     * Impressão AUTOMÁTICA: dispara sozinha quando um pedido novo chega.
+     */
     private fun processarPedido(idPedido: String) {
         Thread {
             try {
@@ -88,6 +104,7 @@ class ServicoImpressao : Service() {
                 when (resultado) {
                     is ResultadoImpressao.Sucesso -> {
                         Log.i(TAG, "Pedido ${pedido.id} impresso com sucesso")
+                        api.marcarPedidoImpresso(pedido.id)
                         atualizarStatus("Última impressão: Mesa ${pedido.mesaNumero} ✓")
                     }
                     is ResultadoImpressao.Erro -> {
@@ -99,6 +116,66 @@ class ServicoImpressao : Service() {
             } catch (e: Exception) {
                 Log.e(TAG, "Erro ao processar pedido", e)
                 atualizarStatus("Erro ao processar pedido")
+            }
+        }.start()
+    }
+
+    /**
+     * Impressão MANUAL: dispara quando o garçom clica em "Imprimir comanda"
+     * ou "Imprimir pedido" (reimpressão) no site.
+     */
+    private fun processarSolicitacao(registro: JSONObject) {
+        Thread {
+            val solicitacaoId = registro.optString("id")
+            try {
+                val tipo = registro.optString("tipo")
+                atualizarStatus("Imprimindo solicitação manual...")
+
+                val dados: ByteArray? = when (tipo) {
+                    "pedido" -> {
+                        val pedidoId = registro.optString("pedido_id")
+                        val pedido = api.buscarPedido(pedidoId)
+                        if (pedido != null) {
+                            api.marcarPedidoImpresso(pedidoId)
+                            ComandaBuilder.montarComanda(pedido)
+                        } else null
+                    }
+                    "comanda" -> {
+                        val comandaId = registro.optString("comanda_id")
+                        val comanda = api.buscarComandaCompleta(comandaId)
+                        if (comanda != null) ComandaBuilder.montarResumoComanda(comanda) else null
+                    }
+                    else -> null
+                }
+
+                if (dados == null) {
+                    Log.w(TAG, "Solicitação $solicitacaoId inválida ou não encontrada")
+                    api.marcarSolicitacaoStatus(solicitacaoId, "erro")
+                    atualizarStatus("Erro: solicitação não encontrada")
+                    return@Thread
+                }
+
+                val resultado = impressora?.imprimir(dados)
+                when (resultado) {
+                    is ResultadoImpressao.Sucesso -> {
+                        Log.i(TAG, "Solicitação $solicitacaoId impressa com sucesso")
+                        api.marcarSolicitacaoStatus(solicitacaoId, "impresso")
+                        atualizarStatus("Impressão manual concluída ✓")
+                    }
+                    is ResultadoImpressao.Erro -> {
+                        Log.e(TAG, "Erro ao imprimir solicitação: ${resultado.mensagem}")
+                        api.marcarSolicitacaoStatus(solicitacaoId, "erro")
+                        atualizarStatus("Erro: ${resultado.mensagem}")
+                    }
+                    null -> {
+                        api.marcarSolicitacaoStatus(solicitacaoId, "erro")
+                        atualizarStatus("Impressora não configurada")
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Erro ao processar solicitação", e)
+                api.marcarSolicitacaoStatus(solicitacaoId, "erro")
+                atualizarStatus("Erro ao processar solicitação")
             }
         }.start()
     }
