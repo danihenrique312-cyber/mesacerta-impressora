@@ -11,11 +11,15 @@ import java.util.concurrent.TimeUnit
 
 /**
  * Mantém uma conexão em tempo real com o Supabase (mesmo mecanismo do site).
- * Quando um pedido novo é inserido no banco, chama onPedidoNovo com o ID dele.
+ * Escuta DUAS coisas:
+ * 1. Pedidos novos (impressão automática, como já era)
+ * 2. Solicitações de impressão manual (quando o garçom pede "Imprimir comanda"
+ *    ou "Imprimir pedido" no site) — filtrado só pelo restaurante deste app.
  */
 class SupabaseRealtime(
-    private val restauranteSlug: String,
+    private val restauranteId: String,
     private val onPedidoNovo: (String) -> Unit,
+    private val onSolicitacaoNova: (JSONObject) -> Unit,
     private val onStatus: (String) -> Unit
 ) {
     companion object {
@@ -44,7 +48,8 @@ class SupabaseRealtime(
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 Log.i(TAG, "WebSocket conectado")
                 onStatus("Conectado, aguardando pedidos")
-                inscrever()
+                inscreverPedidos()
+                inscreverSolicitacoes()
                 iniciarHeartbeat()
             }
 
@@ -65,8 +70,8 @@ class SupabaseRealtime(
         })
     }
 
-    private fun inscrever() {
-        // Inscreve nas inserções da tabela "pedidos"
+    private fun inscreverPedidos() {
+        // Inscreve nas inserções da tabela "pedidos" (impressão automática)
         ref++
         val join = JSONObject().apply {
             put("topic", "realtime:public:pedidos")
@@ -87,21 +92,51 @@ class SupabaseRealtime(
         webSocket?.send(join.toString())
     }
 
+    private fun inscreverSolicitacoes() {
+        // Inscreve nas solicitações de impressão manual, só as DESSE restaurante
+        ref++
+        val join = JSONObject().apply {
+            put("topic", "realtime:public:solicitacoes_impressao")
+            put("event", "phx_join")
+            put("payload", JSONObject().apply {
+                put("config", JSONObject().apply {
+                    put("postgres_changes", org.json.JSONArray().apply {
+                        put(JSONObject().apply {
+                            put("event", "INSERT")
+                            put("schema", "public")
+                            put("table", "solicitacoes_impressao")
+                            put("filter", "restaurante_id=eq.$restauranteId")
+                        })
+                    })
+                })
+            })
+            put("ref", ref.toString())
+        }
+        webSocket?.send(join.toString())
+    }
+
     private fun tratarMensagem(text: String) {
         try {
             val msg = JSONObject(text)
             val evento = msg.optString("event")
-            if (evento == "postgres_changes") {
-                val payload = msg.optJSONObject("payload") ?: return
-                val data = payload.optJSONObject("data") ?: return
-                val tipo = data.optString("type")
-                if (tipo == "INSERT") {
-                    val registro = data.optJSONObject("record") ?: return
-                    val idPedido = registro.optString("id")
-                    if (idPedido.isNotBlank()) {
-                        Log.i(TAG, "Pedido novo detectado: $idPedido")
-                        onPedidoNovo(idPedido)
-                    }
+            if (evento != "postgres_changes") return
+
+            val topico = msg.optString("topic")
+            val payload = msg.optJSONObject("payload") ?: return
+            val data = payload.optJSONObject("data") ?: return
+            val tipo = data.optString("type")
+            if (tipo != "INSERT") return
+
+            val registro = data.optJSONObject("record") ?: return
+
+            if (topico.contains("solicitacoes_impressao")) {
+                Log.i(TAG, "Solicitação de impressão manual detectada")
+                onSolicitacaoNova(registro)
+            } else if (topico.contains("pedidos")) {
+                val idPedido = registro.optString("id")
+                if (idPedido.isNotBlank()) {
+                    Log.i(TAG, "Pedido novo detectado: $idPedido")
+                    onPedidoNovo(idPedido)
                 }
             }
         } catch (e: Exception) {
