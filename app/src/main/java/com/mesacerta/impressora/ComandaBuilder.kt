@@ -51,6 +51,75 @@ object ComandaBuilder {
     }
 
     /**
+     * Monta o RESUMO/EXTRATO completo de uma comanda: todos os pedidos feitos
+     * naquela mesa, do primeiro ao último, com o total geral no final.
+     * Usado quando o garçom pede pra "Imprimir comanda" (não é a impressão
+     * automática de cada pedido, é o extrato acumulado inteiro).
+     */
+    fun montarResumoComanda(comanda: ComandaCompleta): ByteArray {
+        val out = ByteArrayOutputStream()
+        out.write(byteArrayOf(ESC.toByte(), '@'.code.toByte()))
+        out.write(byteArrayOf(ESC.toByte(), '3'.code.toByte(), 45))
+
+        out.write(byteArrayOf(ESC.toByte(), 'a'.code.toByte(), 1))
+        out.write(byteArrayOf(GS.toByte(), '!'.code.toByte(), 0x11))
+        escreverLinha(out, "MESA ${comanda.mesaNumero}")
+        out.write(byteArrayOf(GS.toByte(), '!'.code.toByte(), 0x00))
+        out.write(byteArrayOf(ESC.toByte(), 'E'.code.toByte(), 1))
+        escreverLinha(out, "COMANDA COMPLETA")
+        out.write(byteArrayOf(ESC.toByte(), 'E'.code.toByte(), 0))
+
+        out.write(byteArrayOf(ESC.toByte(), 'a'.code.toByte(), 0))
+        if (comanda.nomeCliente.isNotBlank()) {
+            escreverLinha(out, "Cliente: ${comanda.nomeCliente}")
+        }
+        if (comanda.telefoneCliente.isNotBlank()) {
+            escreverLinha(out, "Tel: ${comanda.telefoneCliente}")
+        }
+        escreverLinha(out, "-".repeat(LARGURA))
+
+        var totalGeral = 0.0
+        for (pedido in comanda.pedidos) {
+            escreverLinha(out, "Pedido as ${horaDoPedido(pedido.criadoEm)}")
+            for (item in pedido.itens) {
+                val subtotal = item.preco * item.quantidade
+                totalGeral += subtotal
+                val linhaEsquerda = "${item.quantidade}x ${item.nome}"
+                escreverLinha(out, montarLinhaComPrecoAlinhado(linhaEsquerda, formatarPreco(subtotal)))
+                for ((chave, valor) in item.variacoes) {
+                    escreverLinha(out, "  $chave: $valor")
+                }
+                if (item.observacao.isNotBlank()) {
+                    escreverLinha(out, "  obs: ${item.observacao}")
+                }
+            }
+            escreverLinha(out, "")
+        }
+
+        escreverLinha(out, "-".repeat(LARGURA))
+        out.write(byteArrayOf(ESC.toByte(), 'E'.code.toByte(), 1))
+        escreverLinha(out, montarLinhaComPrecoAlinhado("TOTAL GERAL", formatarPreco(totalGeral)))
+        out.write(byteArrayOf(ESC.toByte(), 'E'.code.toByte(), 0))
+        escreverLinha(out, "-".repeat(LARGURA))
+        escreverLinha(out, horarioAgora())
+
+        out.write("\n\n\n".toByteArray(Charsets.ISO_8859_1))
+        out.write(byteArrayOf(GS.toByte(), 'V'.code.toByte(), 0x00))
+
+        return out.toByteArray()
+    }
+
+    private fun horaDoPedido(criadoEmIso: String): String {
+        return try {
+            val instant = java.time.Instant.parse(criadoEmIso)
+            val zonado = instant.atZone(java.time.ZoneId.systemDefault())
+            String.format("%02d:%02d", zonado.hour, zonado.minute)
+        } catch (e: Exception) {
+            ""
+        }
+    }
+
+    /**
      * Via da cozinha: itens e observações, sem preço — é só pra saber o que fazer.
      * Também sai o nome e telefone do cliente, pra não ter dúvida de quem é.
      */
