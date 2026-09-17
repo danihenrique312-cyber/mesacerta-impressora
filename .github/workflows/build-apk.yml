@@ -24,6 +24,12 @@ jobs:
 
       - name: Preparar o Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # O Google removeu o pacote legado "tools" do repositorio deles
+          # (setembro/2026), quebrando a instalacao padrao dessa ferramenta.
+          # Instalamos so o platform-tools, que e o que o Gradle realmente
+          # precisa (o resto ele baixa sozinho).
+          packages: platform-tools
 
       - name: Dar permissão ao gradlew
         run: chmod +x ./gradlew
