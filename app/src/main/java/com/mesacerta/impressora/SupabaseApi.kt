@@ -27,7 +27,7 @@ class SupabaseApi {
     fun buscarPedido(idPedido: String): Pedido? {
         // Monta a query com os relacionamentos (mesa + itens)
         val select = "id,criado_em," +
-            "comandas!inner(nome_cliente,telefone_cliente,mesas!inner(numero,restaurantes!inner(imprimir_duas_vias)))," +
+            "comandas!inner(nome_cliente,telefone_cliente,mesas!inner(numero,restaurante_id,restaurantes!inner(imprimir_duas_vias)))," +
             "itens_pedido(quantidade,variacoes_escolhidas,observacao,itens_cardapio(nome,preco))"
 
         val url = "${Config.SUPABASE_URL}/rest/v1/pedidos" +
@@ -62,6 +62,7 @@ class SupabaseApi {
         val comandas = obj.optJSONObject("comandas")
         val mesa = comandas?.optJSONObject("mesas")
         val mesaNumero = mesa?.optString("numero") ?: "?"
+        val restauranteIdDoPedido = textoOuVazio(mesa?.optString("restaurante_id"))
         val restauranteObj = mesa?.optJSONObject("restaurantes")
         val imprimirDuasVias = restauranteObj?.optBoolean("imprimir_duas_vias", true) ?: true
         val nomeCliente = textoOuVazio(comandas?.optString("nome_cliente"))
@@ -74,6 +75,7 @@ class SupabaseApi {
             nomeCliente = nomeCliente,
             telefoneCliente = telefoneCliente,
             imprimirDuasVias = imprimirDuasVias,
+            restauranteId = restauranteIdDoPedido,
             itens = parseItens(obj.optJSONArray("itens_pedido"))
         )
     }
@@ -138,7 +140,7 @@ class SupabaseApi {
      */
     fun buscarComandaCompleta(comandaId: String): ComandaCompleta? {
         val select = "id,nome_cliente,telefone_cliente," +
-            "mesas!inner(numero,restaurantes!inner(imprimir_duas_vias))," +
+            "mesas!inner(numero,restaurante_id,restaurantes!inner(imprimir_duas_vias))," +
             "pedidos(id,criado_em,status,itens_pedido(quantidade,variacoes_escolhidas,observacao,itens_cardapio(nome,preco)))"
 
         val url = "${Config.SUPABASE_URL}/rest/v1/comandas?id=eq.$comandaId&select=$select"
@@ -169,6 +171,7 @@ class SupabaseApi {
     private fun parseComanda(obj: JSONObject): ComandaCompleta {
         val mesa = obj.optJSONObject("mesas")
         val mesaNumero = mesa?.optString("numero") ?: "?"
+        val restauranteIdDaComanda = textoOuVazio(mesa?.optString("restaurante_id"))
         val restauranteObj = mesa?.optJSONObject("restaurantes")
         val imprimirDuasVias = restauranteObj?.optBoolean("imprimir_duas_vias", true) ?: true
         val nomeCliente = textoOuVazio(obj.optString("nome_cliente"))
@@ -189,6 +192,7 @@ class SupabaseApi {
                     nomeCliente = nomeCliente,
                     telefoneCliente = telefoneCliente,
                     imprimirDuasVias = imprimirDuasVias,
+                    restauranteId = restauranteIdDaComanda,
                     itens = parseItens(p.optJSONArray("itens_pedido"))
                 )
             )
