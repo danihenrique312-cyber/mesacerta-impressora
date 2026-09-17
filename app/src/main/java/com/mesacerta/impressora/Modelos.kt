@@ -10,6 +10,7 @@ data class Pedido(
     val nomeCliente: String = "",
     val telefoneCliente: String = "",
     val imprimirDuasVias: Boolean = true,
+    val restauranteId: String = "",
     val itens: List<ItemPedido>
 )
 
