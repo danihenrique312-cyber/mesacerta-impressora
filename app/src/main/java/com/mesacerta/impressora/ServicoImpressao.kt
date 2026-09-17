@@ -35,6 +35,9 @@ class ServicoImpressao : Service() {
     private val api = SupabaseApi()
     private var wakeLock: PowerManager.WakeLock? = null
     private var impressora: ImpressoraBluetooth? = null
+    // Guarda o restaurante configurado NESTE celular, pra nunca imprimir
+    // pedido de outro restaurante por engano (proteção multi-restaurante).
+    private var restauranteIdConfigurado: String? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -70,6 +73,7 @@ class ServicoImpressao : Service() {
                 atualizarStatus("Não encontrei o restaurante (confira o slug)")
                 return@Thread
             }
+            restauranteIdConfigurado = restauranteId
 
             realtime = SupabaseRealtime(
                 restauranteId = restauranteId,
@@ -94,6 +98,15 @@ class ServicoImpressao : Service() {
                 val pedido = api.buscarPedido(idPedido)
                 if (pedido == null) {
                     Log.w(TAG, "Pedido $idPedido não encontrado")
+                    atualizarStatus("Ativo — aguardando pedidos")
+                    return@Thread
+                }
+
+                // Proteção multi-restaurante: só imprime se o pedido for
+                // realmente DESTE restaurante configurado neste celular.
+                val meuRestaurante = restauranteIdConfigurado
+                if (meuRestaurante != null && pedido.restauranteId.isNotBlank() && pedido.restauranteId != meuRestaurante) {
+                    Log.i(TAG, "Pedido de outro restaurante, ignorando (não é deste app)")
                     atualizarStatus("Ativo — aguardando pedidos")
                     return@Thread
                 }
