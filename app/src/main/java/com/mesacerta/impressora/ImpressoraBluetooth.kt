@@ -10,7 +10,10 @@ import java.util.UUID
 
 /**
  * Cuida da conexão com a impressora térmica via Bluetooth (SPP - Serial Port Profile).
- * A maioria das térmicas ESC/POS, incluindo Bematech, usa esse perfil padrão.
+ * Impressoras diferentes (Bematech, Goldensky, e outras genéricas chinesas) às vezes
+ * só aceitam uma forma específica de conectar — por isso tentamos várias, em sequência,
+ * até uma dar certo. Se todas falharem, a mensagem final conta o que aconteceu em
+ * cada tentativa, pra dar pra diagnosticar de longe.
  */
 class ImpressoraBluetooth(private val enderecoMac: String) {
 
@@ -45,9 +48,8 @@ class ImpressoraBluetooth(private val enderecoMac: String) {
             return ResultadoImpressao.Erro("Endereço da impressora inválido")
         }
 
-        // Tenta conectar (com uma segunda tentativa via método reflexivo se a primeira falhar)
         return try {
-            conectar(dispositivo)
+            conectar(adapter, dispositivo)
             for ((indice, dados) in listaDados.withIndex()) {
                 saida?.write(dados)
                 saida?.flush()
@@ -66,25 +68,80 @@ class ImpressoraBluetooth(private val enderecoMac: String) {
         }
     }
 
+    /**
+     * Tenta conectar de várias formas diferentes, na ordem. Impressoras diferentes
+     * respondem melhor a métodos diferentes — por isso não paramos na primeira falha.
+     */
     @SuppressLint("MissingPermission")
-    private fun conectar(dispositivo: BluetoothDevice) {
+    private fun conectar(adapter: BluetoothAdapter, dispositivo: BluetoothDevice) {
+        // Cancelar a busca por outros aparelhos antes de conectar é essencial —
+        // se o Android ainda estiver "escutando" o Bluetooth em busca de outros
+        // dispositivos, a conexão pode falhar ou travar sem motivo aparente.
         try {
-            socket = dispositivo.createRfcommSocketToServiceRecord(SPP_UUID)
-            socket?.connect()
+            adapter.cancelDiscovery()
         } catch (e: Exception) {
-            // Método alternativo: algumas térmicas baratas precisam desse "truque"
-            Log.w(TAG, "Conexão padrão falhou, tentando método alternativo", e)
+            Log.w(TAG, "Não consegui cancelar a busca Bluetooth (seguindo mesmo assim)", e)
+        }
+
+        val erros = mutableListOf<String>()
+
+        val tentativas: List<Pair<String, () -> BluetoothSocket>> = listOf(
+            "conexão segura padrão" to {
+                dispositivo.createRfcommSocketToServiceRecord(SPP_UUID)
+            },
+            "conexão insegura padrão" to {
+                dispositivo.createInsecureRfcommSocketToServiceRecord(SPP_UUID)
+            },
+            "canal reflexivo 1" to {
+                criarSocketPorCanal(dispositivo, 1)
+            },
+            "canal reflexivo 2" to {
+                criarSocketPorCanal(dispositivo, 2)
+            },
+            "canal reflexivo 3" to {
+                criarSocketPorCanal(dispositivo, 3)
+            }
+        )
+
+        for ((nomeTentativa, criarSocket) in tentativas) {
             try {
-                val metodo = dispositivo.javaClass.getMethod(
-                    "createRfcommSocket", Int::class.javaPrimitiveType
-                )
-                socket = metodo.invoke(dispositivo, 1) as BluetoothSocket
-                socket?.connect()
-            } catch (e2: Exception) {
-                throw Exception("Não consegui conectar à impressora. Confira se ela está ligada e pareada.")
+                val novoSocket = criarSocket()
+                novoSocket.connect()
+                // Deu certo — usa esse socket e para de tentar
+                socket = novoSocket
+                saida = socket?.outputStream
+                Log.i(TAG, "Conectou usando: $nomeTentativa")
+                return
+            } catch (e: Exception) {
+                val motivo = e.message ?: e.javaClass.simpleName
+                Log.w(TAG, "Tentativa \"$nomeTentativa\" falhou: $motivo", e)
+                erros.add("$nomeTentativa: $motivo")
+                // Pequena pausa entre tentativas — dá tempo do rádio Bluetooth "descansar"
+                try {
+                    Thread.sleep(400)
+                } catch (ignorado: InterruptedException) { /* ignora */ }
             }
         }
-        saida = socket?.outputStream
+
+        // Todas as tentativas falharam — a mensagem final mostra TODAS as causas,
+        // pra dar pra diagnosticar de longe.
+        throw Exception(
+            "Não consegui conectar à impressora depois de ${tentativas.size} tentativas. " +
+                "Confira se ela está ligada, pareada e com bateria. Detalhes: " +
+                erros.joinToString(" | ")
+        )
+    }
+
+    /**
+     * Cria um socket RFCOMM apontando direto pra um canal específico, via reflexão —
+     * usado como alternativa quando o método padrão (por UUID) não funciona, o que é
+     * comum em impressoras térmicas genéricas/baratas.
+     */
+    private fun criarSocketPorCanal(dispositivo: BluetoothDevice, canal: Int): BluetoothSocket {
+        val metodo = dispositivo.javaClass.getMethod(
+            "createRfcommSocket", Int::class.javaPrimitiveType
+        )
+        return metodo.invoke(dispositivo, canal) as BluetoothSocket
     }
 
     private fun fechar() {
