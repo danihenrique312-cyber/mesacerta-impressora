@@ -50,21 +50,43 @@ class ImpressoraBluetooth(private val enderecoMac: String) {
 
         return try {
             conectar(adapter, dispositivo)
+            val fluxo = saida ?: throw Exception("Conectou, mas não abriu o canal de envio")
             for ((indice, dados) in listaDados.withIndex()) {
-                saida?.write(dados)
-                saida?.flush()
+                enviarEmPedacos(fluxo, dados)
                 // Pausa longa entre as vias, pra impressora terminar de cortar o
                 // papel sem perder dados da próxima via (não pausa após a última).
                 if (indice < listaDados.size - 1) {
                     Thread.sleep(30000)
                 }
             }
+            // IMPORTANTE: o flush só entrega os dados ao Bluetooth do celular, não à
+            // impressora. Se fechar a conexão logo em seguida, o que ainda está em
+            // trânsito se perde e nada sai no papel. Por isso esperamos esvaziar.
+            val total = listaDados.sumOf { it.size }
+            Thread.sleep(1500L + total / 4L)
             ResultadoImpressao.Sucesso
         } catch (e: Exception) {
             Log.e(TAG, "Falha ao imprimir", e)
             ResultadoImpressao.Erro(e.message ?: "Erro desconhecido ao imprimir")
         } finally {
             fechar()
+        }
+    }
+
+    /**
+     * Envia em blocos pequenos com uma pausa entre eles. Impressoras térmicas têm um
+     * buffer minúsculo; despejar a comanda inteira de uma vez estoura o buffer e
+     * parte do texto (ou tudo) é descartado.
+     */
+    private fun enviarEmPedacos(fluxo: OutputStream, dados: ByteArray) {
+        val tamanho = 256
+        var pos = 0
+        while (pos < dados.size) {
+            val fim = minOf(pos + tamanho, dados.size)
+            fluxo.write(dados, pos, fim - pos)
+            fluxo.flush()
+            pos = fim
+            Thread.sleep(60)
         }
     }
 
