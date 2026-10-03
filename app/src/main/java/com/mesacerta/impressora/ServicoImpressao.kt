@@ -63,7 +63,7 @@ class ServicoImpressao : Service() {
             return
         }
 
-        impressora = ImpressoraBluetooth(macImpressora)
+        impressora = ImpressoraBluetooth(applicationContext, macImpressora)
 
         // Descobrir o ID do restaurante é uma chamada de rede, então roda numa thread
         // separada pra não travar o serviço.

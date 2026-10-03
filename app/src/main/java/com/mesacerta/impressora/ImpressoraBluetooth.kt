@@ -15,7 +15,10 @@ import java.util.UUID
  * até uma dar certo. Se todas falharem, a mensagem final conta o que aconteceu em
  * cada tentativa, pra dar pra diagnosticar de longe.
  */
-class ImpressoraBluetooth(private val enderecoMac: String) {
+class ImpressoraBluetooth(
+    private val contexto: android.content.Context,
+    private val enderecoMac: String
+) {
 
     companion object {
         private const val TAG = "MesaCertaImpressora"
@@ -49,7 +52,20 @@ class ImpressoraBluetooth(private val enderecoMac: String) {
         }
 
         return try {
-            conectar(adapter, dispositivo)
+            try {
+                conectar(adapter, dispositivo)
+            } catch (erroClassico: Exception) {
+                Log.w(TAG, "Bluetooth clássico falhou, tentando BLE", erroClassico)
+                try {
+                    saida = BleSaida.abrir(contexto, dispositivo)
+                    Log.i(TAG, "Conectou usando BLE")
+                } catch (erroBle: Exception) {
+                    throw Exception(
+                        "Não consegui conectar à impressora. Confira se ela está ligada e com bateria. " +
+                            "Clássico: ${erroClassico.message} || BLE: ${erroBle.message}"
+                    )
+                }
+            }
             val fluxo = saida ?: throw Exception("Conectou, mas não abriu o canal de envio")
             for ((indice, dados) in listaDados.withIndex()) {
                 enviarEmPedacos(fluxo, dados)
