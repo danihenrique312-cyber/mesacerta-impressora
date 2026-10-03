@@ -109,10 +109,35 @@ class SupabaseApi {
         return if (valor == null || valor == "null") "" else valor
     }
 
+    /** Resultado da busca do restaurante: distingue "não existe" de "deu erro". */
+    sealed class ResultadoSlug {
+        data class Encontrado(val id: String) : ResultadoSlug()
+        object NaoEncontrado : ResultadoSlug()
+        data class ErroHttp(val codigo: Int) : ResultadoSlug()
+        object SemRede : ResultadoSlug()
+    }
+
+    /**
+     * Padroniza o slug digitado: minúsculas, sem acento, espaços/underscores viram hífen.
+     * Ex: " Mega Burguer " -> "mega-burguer".
+     */
+    fun normalizarSlug(bruto: String): String {
+        val semAcento = java.text.Normalizer.normalize(bruto.trim(), java.text.Normalizer.Form.NFD)
+            .replace(Regex("\\p{M}+"), "")
+        return semAcento.lowercase()
+            .replace(Regex("[\\s_]+"), "-")
+            .replace(Regex("[^a-z0-9-]"), "")
+            .replace(Regex("-{2,}"), "-")
+            .trim('-')
+    }
+
     /**
      * Descobre o ID (UUID) do restaurante a partir do slug salvo nas configurações do app.
      */
-    fun buscarRestauranteIdPorSlug(slug: String): String? {
+    fun buscarRestauranteIdPorSlug(slugDigitado: String): ResultadoSlug {
+        val slug = normalizarSlug(slugDigitado)
+        if (slug.isEmpty()) return ResultadoSlug.NaoEncontrado
+
         val url = "${Config.SUPABASE_URL}/rest/v1/restaurantes?slug=eq.$slug&select=id"
         val request = Request.Builder()
             .url(url)
@@ -122,15 +147,19 @@ class SupabaseApi {
 
         return try {
             client.newCall(request).execute().use { resp ->
-                if (!resp.isSuccessful) return null
-                val corpo = resp.body?.string() ?: return null
+                if (!resp.isSuccessful) return ResultadoSlug.ErroHttp(resp.code)
+                val corpo = resp.body?.string() ?: return ResultadoSlug.ErroHttp(resp.code)
                 val array = JSONArray(corpo)
-                if (array.length() == 0) return null
-                array.getJSONObject(0).optString("id")
+                if (array.length() == 0) return ResultadoSlug.NaoEncontrado
+                val id = array.getJSONObject(0).optString("id")
+                if (id.isBlank()) ResultadoSlug.NaoEncontrado else ResultadoSlug.Encontrado(id)
             }
+        } catch (e: java.io.IOException) {
+            Log.e(TAG, "Sem rede ao buscar restaurante pelo slug", e)
+            ResultadoSlug.SemRede
         } catch (e: Exception) {
-            Log.e(TAG, "Falha ao buscar restaurante pelo slug", e)
-            null
+            Log.e(TAG, "Resposta inesperada ao buscar restaurante", e)
+            ResultadoSlug.ErroHttp(-1)
         }
     }
 

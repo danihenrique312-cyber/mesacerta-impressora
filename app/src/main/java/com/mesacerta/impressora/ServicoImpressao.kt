@@ -68,10 +68,28 @@ class ServicoImpressao : Service() {
         // Descobrir o ID do restaurante é uma chamada de rede, então roda numa thread
         // separada pra não travar o serviço.
         Thread {
-            val restauranteId = api.buscarRestauranteIdPorSlug(slug)
-            if (restauranteId == null) {
-                atualizarStatus("Não encontrei o restaurante (confira o slug)")
-                return@Thread
+            var restauranteId: String? = null
+            var tentativa = 0
+            // Sem internet no momento? Tenta de novo a cada 10s em vez de desistir.
+            while (restauranteId == null) {
+                if (!rodando) return@Thread
+                when (val r = api.buscarRestauranteIdPorSlug(slug)) {
+                    is SupabaseApi.ResultadoSlug.Encontrado -> restauranteId = r.id
+                    is SupabaseApi.ResultadoSlug.NaoEncontrado -> {
+                        atualizarStatus("Restaurante \"${api.normalizarSlug(slug)}\" não existe. Confira o slug (final do link do cardápio)")
+                        return@Thread
+                    }
+                    is SupabaseApi.ResultadoSlug.ErroHttp -> {
+                        atualizarStatus("Servidor recusou a consulta (erro ${r.codigo}). Tentando de novo...")
+                    }
+                    is SupabaseApi.ResultadoSlug.SemRede -> {
+                        atualizarStatus("Sem internet. Tentando de novo...")
+                    }
+                }
+                if (restauranteId == null) {
+                    tentativa++
+                    try { Thread.sleep(10_000) } catch (e: InterruptedException) { return@Thread }
+                }
             }
             restauranteIdConfigurado = restauranteId
 

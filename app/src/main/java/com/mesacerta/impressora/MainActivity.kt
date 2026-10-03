@@ -131,7 +131,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun ligarServico() {
-        val slug = campoSlug.text.toString().trim()
+        val slug = SupabaseApi().normalizarSlug(campoSlug.text.toString())
+        campoSlug.setText(slug)
         if (slug.isBlank()) {
             Toast.makeText(this, "Digite o nome do restaurante (slug)", Toast.LENGTH_SHORT).show()
             return
