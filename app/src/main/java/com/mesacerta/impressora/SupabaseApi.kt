@@ -10,51 +10,127 @@ import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
 /**
- * Busca os detalhes completos de um pedido no banco (via API REST do Supabase).
- * Usa a mesma consulta que o painel da cozinha usa no site.
+ * Fala com o servidor do MesaCerta (rota /api/impressora). O app NÃO acessa mais o
+ * banco direto: toda chamada leva o slug + o código secreto do restaurante, e o
+ * servidor confere antes de devolver ou alterar qualquer coisa.
  */
 class SupabaseApi {
 
     companion object {
         private const val TAG = "MesaCertaApi"
+        private val JSON = "application/json".toMediaType()
     }
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(20, TimeUnit.SECONDS)
         .build()
 
-    fun buscarPedido(idPedido: String): Pedido? {
-        // Monta a query com os relacionamentos (mesa + itens)
-        val select = "id,criado_em," +
-            "comandas!inner(nome_cliente,telefone_cliente,mesas!inner(numero,restaurante_id,restaurantes!inner(imprimir_duas_vias)))," +
-            "itens_pedido(quantidade,variacoes_escolhidas,observacao,itens_cardapio(nome,preco))"
+    @Volatile private var slug: String = ""
+    @Volatile private var chave: String = ""
 
-        val url = "${Config.SUPABASE_URL}/rest/v1/pedidos" +
-            "?id=eq.$idPedido" +
-            "&select=$select"
+    /** Define o restaurante e o código secreto usados em todas as chamadas. */
+    fun configurar(slugDigitado: String, chaveDigitada: String) {
+        slug = normalizarSlug(slugDigitado)
+        chave = chaveDigitada.trim()
+    }
 
+    /** Resposta crua do servidor: código HTTP + corpo (ou erro de rede). */
+    private class Resposta(val codigo: Int, val corpo: JSONObject?, val semRede: Boolean)
+
+    private fun chamar(acao: String, extras: JSONObject = JSONObject()): Resposta {
+        val json = JSONObject(extras.toString()).apply {
+            put("acao", acao)
+            put("slug", slug)
+            put("k", chave)
+        }
         val request = Request.Builder()
-            .url(url)
-            .addHeader("apikey", Config.SUPABASE_ANON_KEY)
-            .addHeader("Authorization", "Bearer ${Config.SUPABASE_ANON_KEY}")
+            .url("${Config.API_BASE}/api/impressora")
+            .post(json.toString().toRequestBody(JSON))
             .build()
-
         return try {
             client.newCall(request).execute().use { resp ->
-                if (!resp.isSuccessful) {
-                    Log.e(TAG, "Erro HTTP ${resp.code} ao buscar pedido")
-                    return null
-                }
-                val corpo = resp.body?.string() ?: return null
-                val array = JSONArray(corpo)
-                if (array.length() == 0) return null
-                parsePedido(array.getJSONObject(0))
+                val texto = resp.body?.string() ?: ""
+                val corpo = try { JSONObject(texto) } catch (e: Exception) { null }
+                Resposta(resp.code, corpo, false)
             }
+        } catch (e: java.io.IOException) {
+            Log.w(TAG, "Sem rede em $acao", e)
+            Resposta(-1, null, true)
         } catch (e: Exception) {
-            Log.e(TAG, "Falha ao buscar pedido", e)
-            null
+            Log.e(TAG, "Erro inesperado em $acao", e)
+            Resposta(-2, null, false)
         }
+    }
+
+    /** Resultado da checagem de acesso: distingue "código errado" de "deu erro". */
+    sealed class ResultadoAcesso {
+        object Ok : ResultadoAcesso()
+        object CodigoInvalido : ResultadoAcesso()
+        data class ErroHttp(val codigo: Int) : ResultadoAcesso()
+        object SemRede : ResultadoAcesso()
+    }
+
+    /** Fila de impressão: ids de pedidos novos + solicitações manuais pendentes. */
+    class Fila(val pedidos: List<String>, val solicitacoes: List<JSONObject>)
+
+    /**
+     * Padroniza o slug digitado: minúsculas, sem acento, espaços/underscores viram hífen.
+     * Ex: " Mega Burguer " -> "mega-burguer".
+     */
+    fun normalizarSlug(bruto: String): String {
+        val semAcento = java.text.Normalizer.normalize(bruto.trim(), java.text.Normalizer.Form.NFD)
+            .replace(Regex("\\p{M}+"), "")
+        return semAcento.lowercase()
+            .replace(Regex("[\\s_]+"), "-")
+            .replace(Regex("[^a-z0-9-]"), "")
+            .replace(Regex("-{2,}"), "-")
+            .trim('-')
+    }
+
+
+    /** Pergunta ao servidor o que há pra imprimir (também serve pra validar o código). */
+    fun buscarFila(desdeIso: String): Pair<ResultadoAcesso, Fila?> {
+        val r = chamar("fila", JSONObject().put("desde", desdeIso))
+        if (r.semRede) return ResultadoAcesso.SemRede to null
+        if (r.codigo == 401) return ResultadoAcesso.CodigoInvalido to null
+        val corpo = r.corpo
+        if (r.codigo != 200 || corpo == null) return ResultadoAcesso.ErroHttp(r.codigo) to null
+
+        val ids = mutableListOf<String>()
+        val arrP = corpo.optJSONArray("pedidos") ?: JSONArray()
+        for (i in 0 until arrP.length()) ids.add(arrP.optString(i))
+        val sols = mutableListOf<JSONObject>()
+        val arrS = corpo.optJSONArray("solicitacoes") ?: JSONArray()
+        for (i in 0 until arrS.length()) arrS.optJSONObject(i)?.let { sols.add(it) }
+        return ResultadoAcesso.Ok to Fila(ids, sols)
+    }
+
+    fun buscarPedido(idPedido: String): Pedido? {
+        val r = chamar("pedido", JSONObject().put("id", idPedido))
+        val dados = r.corpo?.optJSONObject("dados") ?: return null
+        return parsePedido(dados)
+    }
+
+    fun buscarComandaCompleta(comandaId: String): ComandaCompleta? {
+        val r = chamar("comanda", JSONObject().put("id", comandaId))
+        val dados = r.corpo?.optJSONObject("dados") ?: return null
+        return parseComanda(dados)
+    }
+
+    /** Marca um pedido como impresso (pra não aparecer mais como "pendente de impressão"). */
+    fun marcarPedidoImpresso(pedidoId: String) {
+        val r = chamar("marcar_pedido", JSONObject().put("id", pedidoId))
+        if (r.codigo != 200) Log.e(TAG, "Falha ao marcar pedido impresso (${r.codigo})")
+    }
+
+    /** Marca uma solicitação de impressão manual como processada (impresso ou erro). */
+    fun marcarSolicitacaoStatus(solicitacaoId: String, status: String) {
+        val r = chamar(
+            "marcar_solicitacao",
+            JSONObject().put("id", solicitacaoId).put("status", status)
+        )
+        if (r.codigo != 200) Log.e(TAG, "Falha ao marcar solicitação (${r.codigo})")
     }
 
     private fun parsePedido(obj: JSONObject): Pedido {
@@ -109,94 +185,6 @@ class SupabaseApi {
         return if (valor == null || valor == "null") "" else valor
     }
 
-    /** Resultado da busca do restaurante: distingue "não existe" de "deu erro". */
-    sealed class ResultadoSlug {
-        data class Encontrado(val id: String) : ResultadoSlug()
-        object NaoEncontrado : ResultadoSlug()
-        data class ErroHttp(val codigo: Int) : ResultadoSlug()
-        object SemRede : ResultadoSlug()
-    }
-
-    /**
-     * Padroniza o slug digitado: minúsculas, sem acento, espaços/underscores viram hífen.
-     * Ex: " Mega Burguer " -> "mega-burguer".
-     */
-    fun normalizarSlug(bruto: String): String {
-        val semAcento = java.text.Normalizer.normalize(bruto.trim(), java.text.Normalizer.Form.NFD)
-            .replace(Regex("\\p{M}+"), "")
-        return semAcento.lowercase()
-            .replace(Regex("[\\s_]+"), "-")
-            .replace(Regex("[^a-z0-9-]"), "")
-            .replace(Regex("-{2,}"), "-")
-            .trim('-')
-    }
-
-    /**
-     * Descobre o ID (UUID) do restaurante a partir do slug salvo nas configurações do app.
-     */
-    fun buscarRestauranteIdPorSlug(slugDigitado: String): ResultadoSlug {
-        val slug = normalizarSlug(slugDigitado)
-        if (slug.isEmpty()) return ResultadoSlug.NaoEncontrado
-
-        val url = "${Config.SUPABASE_URL}/rest/v1/restaurantes?slug=eq.$slug&select=id"
-        val request = Request.Builder()
-            .url(url)
-            .addHeader("apikey", Config.SUPABASE_ANON_KEY)
-            .addHeader("Authorization", "Bearer ${Config.SUPABASE_ANON_KEY}")
-            .build()
-
-        return try {
-            client.newCall(request).execute().use { resp ->
-                if (!resp.isSuccessful) return ResultadoSlug.ErroHttp(resp.code)
-                val corpo = resp.body?.string() ?: return ResultadoSlug.ErroHttp(resp.code)
-                val array = JSONArray(corpo)
-                if (array.length() == 0) return ResultadoSlug.NaoEncontrado
-                val id = array.getJSONObject(0).optString("id")
-                if (id.isBlank()) ResultadoSlug.NaoEncontrado else ResultadoSlug.Encontrado(id)
-            }
-        } catch (e: java.io.IOException) {
-            Log.e(TAG, "Sem rede ao buscar restaurante pelo slug", e)
-            ResultadoSlug.SemRede
-        } catch (e: Exception) {
-            Log.e(TAG, "Resposta inesperada ao buscar restaurante", e)
-            ResultadoSlug.ErroHttp(-1)
-        }
-    }
-
-    /**
-     * Busca a comanda inteira de uma mesa, com todos os pedidos (exceto cancelados)
-     * pra imprimir o resumo/extrato completo.
-     */
-    fun buscarComandaCompleta(comandaId: String): ComandaCompleta? {
-        val select = "id,nome_cliente,telefone_cliente," +
-            "mesas!inner(numero,restaurante_id,restaurantes!inner(imprimir_duas_vias))," +
-            "pedidos(id,criado_em,status,itens_pedido(quantidade,variacoes_escolhidas,observacao,itens_cardapio(nome,preco)))"
-
-        val url = "${Config.SUPABASE_URL}/rest/v1/comandas?id=eq.$comandaId&select=$select"
-
-        val request = Request.Builder()
-            .url(url)
-            .addHeader("apikey", Config.SUPABASE_ANON_KEY)
-            .addHeader("Authorization", "Bearer ${Config.SUPABASE_ANON_KEY}")
-            .build()
-
-        return try {
-            client.newCall(request).execute().use { resp ->
-                if (!resp.isSuccessful) {
-                    Log.e(TAG, "Erro HTTP ${resp.code} ao buscar comanda")
-                    return null
-                }
-                val corpo = resp.body?.string() ?: return null
-                val array = JSONArray(corpo)
-                if (array.length() == 0) return null
-                parseComanda(array.getJSONObject(0))
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Falha ao buscar comanda", e)
-            null
-        }
-    }
-
     private fun parseComanda(obj: JSONObject): ComandaCompleta {
         val mesa = obj.optJSONObject("mesas")
         val mesaNumero = mesa?.optString("numero") ?: "?"
@@ -237,46 +225,5 @@ class SupabaseApi {
             imprimirDuasVias = imprimirDuasVias,
             pedidos = pedidos
         )
-    }
-
-    /**
-     * Marca um pedido como impresso (pra não aparecer mais como "pendente de impressão").
-     */
-    fun marcarPedidoImpresso(pedidoId: String) {
-        atualizar("pedidos", "id=eq.$pedidoId", """{"impresso": true}""")
-    }
-
-    /**
-     * Marca uma solicitação de impressão manual como processada (impresso ou erro).
-     */
-    fun marcarSolicitacaoStatus(solicitacaoId: String, status: String) {
-        val agora = java.time.Instant.now().toString()
-        atualizar(
-            "solicitacoes_impressao",
-            "id=eq.$solicitacaoId",
-            """{"status": "$status", "processado_em": "$agora"}"""
-        )
-    }
-
-    private fun atualizar(tabela: String, filtro: String, corpoJson: String) {
-        val url = "${Config.SUPABASE_URL}/rest/v1/$tabela?$filtro"
-        val corpo = corpoJson.toRequestBody("application/json".toMediaType())
-        val request = Request.Builder()
-            .url(url)
-            .patch(corpo)
-            .addHeader("apikey", Config.SUPABASE_ANON_KEY)
-            .addHeader("Authorization", "Bearer ${Config.SUPABASE_ANON_KEY}")
-            .addHeader("Prefer", "return=minimal")
-            .build()
-
-        try {
-            client.newCall(request).execute().use { resp ->
-                if (!resp.isSuccessful) {
-                    Log.e(TAG, "Erro HTTP ${resp.code} ao atualizar $tabela")
-                }
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Falha ao atualizar $tabela", e)
-        }
     }
 }

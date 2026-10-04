@@ -33,6 +33,7 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var spinnerImpressora: Spinner
     private lateinit var campoSlug: EditText
+    private lateinit var campoChave: EditText
     private lateinit var botaoLigar: Button
     private lateinit var textoStatus: TextView
     private lateinit var textoAvisoBateria: TextView
@@ -51,12 +52,14 @@ class MainActivity : AppCompatActivity() {
 
         spinnerImpressora = findViewById(R.id.spinnerImpressora)
         campoSlug = findViewById(R.id.campoSlug)
+        campoChave = findViewById(R.id.campoChave)
         botaoLigar = findViewById(R.id.botaoLigar)
         textoStatus = findViewById(R.id.textoStatus)
         textoAvisoBateria = findViewById(R.id.textoAvisoBateria)
 
         val prefs = getSharedPreferences(Config.PREF_NOME, Context.MODE_PRIVATE)
         campoSlug.setText(prefs.getString(Config.PREF_RESTAURANTE_SLUG, ""))
+        campoChave.setText(prefs.getString(Config.PREF_CHAVE_EQUIPE, ""))
 
         botaoLigar.setOnClickListener { alternarServico() }
 
@@ -131,8 +134,21 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun ligarServico() {
+        // Dá pra colar o link inteiro da cozinha (…/cozinha/slug?k=CODIGO): o app separa sozinho.
+        val colado = Regex("/(?:cozinha|garcom)/([^/?#\\s]+)\\?k=([A-Za-z0-9]+)")
+        val achouLink = colado.find(campoSlug.text.toString()) ?: colado.find(campoChave.text.toString())
+        if (achouLink != null) {
+            campoSlug.setText(achouLink.groupValues[1])
+            campoChave.setText(achouLink.groupValues[2])
+        }
         val slug = SupabaseApi().normalizarSlug(campoSlug.text.toString())
         campoSlug.setText(slug)
+        val chave = campoChave.text.toString().trim()
+        campoChave.setText(chave)
+        if (chave.isBlank()) {
+            Toast.makeText(this, "Cole o código do restaurante (QR da cozinha no painel)", Toast.LENGTH_LONG).show()
+            return
+        }
         if (slug.isBlank()) {
             Toast.makeText(this, "Digite o nome do restaurante (slug)", Toast.LENGTH_SHORT).show()
             return
@@ -151,6 +167,7 @@ class MainActivity : AppCompatActivity() {
             putString(Config.PREF_IMPRESSORA_MAC, mac)
             putString(Config.PREF_IMPRESSORA_NOME, nome)
             putString(Config.PREF_RESTAURANTE_SLUG, slug)
+            putString(Config.PREF_CHAVE_EQUIPE, chave)
             putBoolean(Config.PREF_SERVICO_ATIVO, true)
             apply()
         }

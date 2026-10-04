@@ -31,13 +31,15 @@ class ServicoImpressao : Service() {
             private set
     }
 
-    private var realtime: SupabaseRealtime? = null
+    private var threadFila: Thread? = null
+    // Imprime um de cada vez (Bluetooth não aceita duas impressões ao mesmo tempo).
+    private val filaImpressao = java.util.concurrent.Executors.newSingleThreadExecutor()
+    // Cada pedido/solicitação é tentado só uma vez por execução (se falhar, aparece
+    // como NÃO IMPRESSO no painel e dá pra reimprimir de lá).
+    private val jaTentados = java.util.Collections.synchronizedSet(mutableSetOf<String>())
     private val api = SupabaseApi()
     private var wakeLock: PowerManager.WakeLock? = null
     private var impressora: ImpressoraBluetooth? = null
-    // Guarda o restaurante configurado NESTE celular, pra nunca imprimir
-    // pedido de outro restaurante por engano (proteção multi-restaurante).
-    private var restauranteIdConfigurado: String? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -65,49 +67,54 @@ class ServicoImpressao : Service() {
 
         impressora = ImpressoraBluetooth(applicationContext, macImpressora)
 
-        // Descobrir o ID do restaurante é uma chamada de rede, então roda numa thread
-        // separada pra não travar o serviço.
-        Thread {
-            var restauranteId: String? = null
-            var tentativa = 0
-            // Sem internet no momento? Tenta de novo a cada 10s em vez de desistir.
-            while (restauranteId == null) {
-                if (!rodando) return@Thread
-                when (val r = api.buscarRestauranteIdPorSlug(slug)) {
-                    is SupabaseApi.ResultadoSlug.Encontrado -> restauranteId = r.id
-                    is SupabaseApi.ResultadoSlug.NaoEncontrado -> {
-                        atualizarStatus("Restaurante \"${api.normalizarSlug(slug)}\" não existe. Confira o slug (final do link do cardápio)")
-                        return@Thread
-                    }
-                    is SupabaseApi.ResultadoSlug.ErroHttp -> {
-                        atualizarStatus("Servidor recusou a consulta (erro ${r.codigo}). Tentando de novo...")
-                    }
-                    is SupabaseApi.ResultadoSlug.SemRede -> {
-                        atualizarStatus("Sem internet. Tentando de novo...")
-                    }
-                }
-                if (restauranteId == null) {
-                    tentativa++
-                    try { Thread.sleep(10_000) } catch (e: InterruptedException) { return@Thread }
-                }
-            }
-            restauranteIdConfigurado = restauranteId
+        val chave = prefs.getString(Config.PREF_CHAVE_EQUIPE, "") ?: ""
+        if (chave.isBlank()) {
+            atualizarStatus("Falta o código do restaurante — abra o app e preencha")
+            return
+        }
+        api.configurar(slug, chave)
 
-            realtime = SupabaseRealtime(
-                restauranteId = restauranteId,
-                onPedidoNovo = { idPedido -> processarPedido(idPedido) },
-                onSolicitacaoNova = { registro -> processarSolicitacao(registro) },
-                onStatus = { status -> atualizarStatus(status) }
-            )
-            realtime?.conectar()
-        }.start()
+        // Só imprime pedidos criados depois de ligar (menos 2 min de folga), pra
+        // não despejar pedidos antigos na impressora.
+        val desde = java.time.Instant.now().minusSeconds(120).toString()
+
+        threadFila?.interrupt()
+        threadFila = Thread {
+            var ultimoOk = false
+            while (rodando) {
+                val (acesso, fila) = api.buscarFila(desde)
+                when (acesso) {
+                    is SupabaseApi.ResultadoAcesso.Ok -> {
+                        if (!ultimoOk) atualizarStatus("Conectado, aguardando pedidos")
+                        ultimoOk = true
+                        fila?.pedidos?.forEach { id -> if (jaTentados.add("p:$id")) processarPedido(id) }
+                        fila?.solicitacoes?.forEach { sol ->
+                            if (jaTentados.add("s:" + sol.optString("id"))) processarSolicitacao(sol)
+                        }
+                    }
+                    is SupabaseApi.ResultadoAcesso.CodigoInvalido -> {
+                        atualizarStatus("Restaurante ou código incorreto. Confira o slug e o código no painel (QR da cozinha).")
+                        ultimoOk = false
+                    }
+                    is SupabaseApi.ResultadoAcesso.ErroHttp -> {
+                        atualizarStatus("Servidor com problema (erro ${acesso.codigo}). Tentando de novo...")
+                        ultimoOk = false
+                    }
+                    is SupabaseApi.ResultadoAcesso.SemRede -> {
+                        atualizarStatus("Sem internet. Tentando de novo...")
+                        ultimoOk = false
+                    }
+                }
+                try { Thread.sleep(3000) } catch (e: InterruptedException) { break }
+            }
+        }.also { it.start() }
     }
 
     /**
      * Impressão AUTOMÁTICA: dispara sozinha quando um pedido novo chega.
      */
     private fun processarPedido(idPedido: String) {
-        Thread {
+        filaImpressao.execute {
             try {
                 atualizarStatus("Imprimindo pedido...")
                 // Pequena espera pra garantir que os itens já foram salvos no banco
@@ -117,16 +124,7 @@ class ServicoImpressao : Service() {
                 if (pedido == null) {
                     Log.w(TAG, "Pedido $idPedido não encontrado")
                     atualizarStatus("Ativo — aguardando pedidos")
-                    return@Thread
-                }
-
-                // Proteção multi-restaurante: só imprime se o pedido for
-                // realmente DESTE restaurante configurado neste celular.
-                val meuRestaurante = restauranteIdConfigurado
-                if (meuRestaurante != null && pedido.restauranteId.isNotBlank() && pedido.restauranteId != meuRestaurante) {
-                    Log.i(TAG, "Pedido de outro restaurante, ignorando (não é deste app)")
-                    atualizarStatus("Ativo — aguardando pedidos")
-                    return@Thread
+                    return@execute
                 }
 
                 val dados = ComandaBuilder.montarComanda(pedido)
@@ -148,7 +146,7 @@ class ServicoImpressao : Service() {
                 Log.e(TAG, "Erro ao processar pedido", e)
                 atualizarStatus("Erro ao processar pedido")
             }
-        }.start()
+        }
     }
 
     /**
@@ -156,7 +154,7 @@ class ServicoImpressao : Service() {
      * ou "Imprimir pedido" (reimpressão) no site.
      */
     private fun processarSolicitacao(registro: JSONObject) {
-        Thread {
+        filaImpressao.execute {
             val solicitacaoId = registro.optString("id")
             try {
                 val tipo = registro.optString("tipo")
@@ -183,7 +181,7 @@ class ServicoImpressao : Service() {
                     Log.w(TAG, "Solicitação $solicitacaoId inválida ou não encontrada")
                     api.marcarSolicitacaoStatus(solicitacaoId, "erro")
                     atualizarStatus("Erro: solicitação não encontrada")
-                    return@Thread
+                    return@execute
                 }
 
                 val resultado = impressora?.imprimir(dados)
@@ -208,7 +206,7 @@ class ServicoImpressao : Service() {
                 api.marcarSolicitacaoStatus(solicitacaoId, "erro")
                 atualizarStatus("Erro ao processar solicitação")
             }
-        }.start()
+        }
     }
 
     private fun atualizarStatus(status: String) {
@@ -274,7 +272,8 @@ class ServicoImpressao : Service() {
     override fun onDestroy() {
         super.onDestroy()
         rodando = false
-        realtime?.desconectar()
+        threadFila?.interrupt()
+        filaImpressao.shutdown()
         try { wakeLock?.release() } catch (e: Exception) { /* ignora */ }
         Log.i(TAG, "Serviço encerrado")
     }
