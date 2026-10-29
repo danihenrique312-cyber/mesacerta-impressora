@@ -63,7 +63,7 @@ object ComandaBuilder {
 
         out.write(byteArrayOf(ESC.toByte(), 'a'.code.toByte(), 1))
         out.write(byteArrayOf(GS.toByte(), '!'.code.toByte(), 0x11))
-        escreverLinha(out, "MESA ${comanda.mesaNumero}")
+        escreverLinha(out, comanda.entrega?.titulo() ?: "MESA ${comanda.mesaNumero}")
         out.write(byteArrayOf(GS.toByte(), '!'.code.toByte(), 0x00))
         out.write(byteArrayOf(ESC.toByte(), 'E'.code.toByte(), 1))
         escreverLinha(out, "COMANDA COMPLETA")
@@ -97,9 +97,19 @@ object ComandaBuilder {
         }
 
         escreverLinha(out, "-".repeat(LARGURA))
+        val entrega = comanda.entrega
+        if (entrega != null && entrega.taxaEntrega > 0 && comanda.pedidos.isNotEmpty()) {
+            escreverLinha(out, montarLinhaComPrecoAlinhado("Subtotal", formatarPreco(totalGeral)))
+            escreverLinha(out, montarLinhaComPrecoAlinhado("Taxa de entrega", formatarPreco(entrega.taxaEntrega)))
+            totalGeral += entrega.taxaEntrega
+        }
         out.write(byteArrayOf(ESC.toByte(), 'E'.code.toByte(), 1))
         escreverLinha(out, montarLinhaComPrecoAlinhado("TOTAL GERAL", formatarPreco(totalGeral)))
         out.write(byteArrayOf(ESC.toByte(), 'E'.code.toByte(), 0))
+        if (entrega != null) {
+            escreverLinha(out, "-".repeat(LARGURA))
+            escreverDadosEntrega(out, entrega, totalGeral)
+        }
         escreverLinha(out, "-".repeat(LARGURA))
         escreverLinha(out, horarioAgora())
 
@@ -126,7 +136,7 @@ object ComandaBuilder {
     private fun escreverViaCozinha(out: ByteArrayOutputStream, pedido: Pedido) {
         out.write(byteArrayOf(ESC.toByte(), 'a'.code.toByte(), 1))
         out.write(byteArrayOf(GS.toByte(), '!'.code.toByte(), 0x11))
-        escreverLinha(out, "MESA ${pedido.mesaNumero}")
+        escreverLinha(out, pedido.entrega?.titulo() ?: "MESA ${pedido.mesaNumero}")
         out.write(byteArrayOf(GS.toByte(), '!'.code.toByte(), 0x00))
         out.write(byteArrayOf(ESC.toByte(), 'E'.code.toByte(), 1))
         escreverLinha(out, "VIA COZINHA")
@@ -134,6 +144,11 @@ object ComandaBuilder {
 
         out.write(byteArrayOf(ESC.toByte(), 'a'.code.toByte(), 0))
         escreverDadosCliente(out, pedido)
+        pedido.entrega?.let { entrega ->
+            // Na cozinha sai o endereço também: é dali que o pedido sai pra entrega.
+            escreverLinha(out, "-".repeat(LARGURA))
+            escreverDadosEntrega(out, entrega, totalComTaxa(pedido))
+        }
         escreverLinha(out, "-".repeat(LARGURA))
 
         for (item in pedido.itens) {
@@ -163,7 +178,7 @@ object ComandaBuilder {
     private fun escreverViaCaixa(out: ByteArrayOutputStream, pedido: Pedido) {
         out.write(byteArrayOf(ESC.toByte(), 'a'.code.toByte(), 1))
         out.write(byteArrayOf(GS.toByte(), '!'.code.toByte(), 0x11))
-        escreverLinha(out, "MESA ${pedido.mesaNumero}")
+        escreverLinha(out, pedido.entrega?.titulo() ?: "MESA ${pedido.mesaNumero}")
         out.write(byteArrayOf(GS.toByte(), '!'.code.toByte(), 0x00))
         out.write(byteArrayOf(ESC.toByte(), 'E'.code.toByte(), 1))
         escreverLinha(out, "VIA CAIXA")
@@ -183,11 +198,58 @@ object ComandaBuilder {
         }
 
         escreverLinha(out, "-".repeat(LARGURA))
+        val entrega = pedido.entrega
+        if (entrega != null && entrega.taxaEntrega > 0) {
+            escreverLinha(out, montarLinhaComPrecoAlinhado("Subtotal", formatarPreco(total)))
+            escreverLinha(out, montarLinhaComPrecoAlinhado("Taxa de entrega", formatarPreco(entrega.taxaEntrega)))
+            total += entrega.taxaEntrega
+        }
         out.write(byteArrayOf(ESC.toByte(), 'E'.code.toByte(), 1))
         escreverLinha(out, montarLinhaComPrecoAlinhado("TOTAL", formatarPreco(total)))
         out.write(byteArrayOf(ESC.toByte(), 'E'.code.toByte(), 0))
+        if (entrega != null) {
+            escreverLinha(out, "-".repeat(LARGURA))
+            escreverDadosEntrega(out, entrega, total)
+        }
         escreverLinha(out, "-".repeat(LARGURA))
         escreverLinha(out, horarioAgora())
+    }
+
+    /** Total do pedido de casa: itens + taxa de entrega. */
+    private fun totalComTaxa(pedido: Pedido): Double =
+        pedido.itens.sumOf { it.preco * it.quantidade } + (pedido.entrega?.taxaEntrega ?: 0.0)
+
+    /**
+     * Pedido de casa: endereço (ou retirada), forma de pagamento e quanto levar de troco.
+     */
+    private fun escreverDadosEntrega(out: ByteArrayOutputStream, entrega: Entrega, total: Double) {
+        out.write(byteArrayOf(ESC.toByte(), 'E'.code.toByte(), 1))
+        if (entrega.ehEntrega) {
+            escreverLinha(out, "ENTREGAR EM:")
+            out.write(byteArrayOf(ESC.toByte(), 'E'.code.toByte(), 0))
+            escreverLinha(out, "${entrega.rua}, ${entrega.numeroCasa}")
+            if (entrega.bairro.isNotBlank()) escreverLinha(out, "Bairro: ${entrega.bairro}")
+            if (entrega.complemento.isNotBlank()) escreverLinha(out, "Compl.: ${entrega.complemento}")
+            if (entrega.referencia.isNotBlank()) escreverLinha(out, "Ref.: ${entrega.referencia}")
+        } else {
+            escreverLinha(out, "RETIRADA NO BALCÃO")
+            out.write(byteArrayOf(ESC.toByte(), 'E'.code.toByte(), 0))
+        }
+        if (entrega.formaPagamento.isNotBlank()) {
+            escreverLinha(out, "Pagamento: ${entrega.rotuloPagamento()}")
+            if (entrega.formaPagamento == "dinheiro") {
+                val troco = entrega.trocoPara
+                if (troco != null && troco > 0) {
+                    escreverLinha(out, "Troco para ${formatarPreco(troco)}")
+                    out.write(byteArrayOf(ESC.toByte(), 'E'.code.toByte(), 1))
+                    escreverLinha(out, "LEVAR TROCO: ${formatarPreco((troco - total).coerceAtLeast(0.0))}")
+                    out.write(byteArrayOf(ESC.toByte(), 'E'.code.toByte(), 0))
+                } else {
+                    escreverLinha(out, "Sem troco")
+                }
+            }
+        }
+        if (entrega.observacao.isNotBlank()) escreverLinha(out, "Obs.: ${entrega.observacao}")
     }
 
     /**

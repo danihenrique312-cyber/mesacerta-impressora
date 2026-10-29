@@ -152,7 +152,34 @@ class SupabaseApi {
             telefoneCliente = telefoneCliente,
             imprimirDuasVias = imprimirDuasVias,
             restauranteId = restauranteIdDoPedido,
-            itens = parseItens(obj.optJSONArray("itens_pedido"))
+            itens = parseItens(obj.optJSONArray("itens_pedido")),
+            entrega = parseEntrega(comandas)
+        )
+    }
+
+    /**
+     * Lê os dados do pedido de casa (delivery/retirada) que vêm junto da comanda.
+     * Pedido de mesa não tem esses dados e devolve null.
+     */
+    private fun parseEntrega(comanda: JSONObject?): Entrega? {
+        if (comanda == null) return null
+        val tipo = textoOuVazio(comanda.optString("tipo"))
+        if (tipo != "entrega" && tipo != "retirada") return null
+        val endereco = comanda.optJSONObject("endereco")
+        val taxa = comanda.optDouble("taxa_entrega", 0.0)
+        val troco = if (comanda.isNull("troco_para")) null else comanda.optDouble("troco_para")
+        return Entrega(
+            tipo = tipo,
+            numero = if (comanda.isNull("numero_pedido")) null else comanda.optInt("numero_pedido"),
+            rua = textoOuVazio(endereco?.optString("rua")),
+            numeroCasa = textoOuVazio(endereco?.optString("numero")),
+            bairro = textoOuVazio(endereco?.optString("bairro")),
+            complemento = textoOuVazio(endereco?.optString("complemento")),
+            referencia = textoOuVazio(endereco?.optString("referencia")),
+            taxaEntrega = if (taxa.isNaN()) 0.0 else taxa,
+            formaPagamento = textoOuVazio(comanda.optString("forma_pagamento")),
+            trocoPara = if (troco == null || troco.isNaN()) null else troco,
+            observacao = textoOuVazio(comanda.optString("observacao"))
         )
     }
 
@@ -223,7 +250,8 @@ class SupabaseApi {
             nomeCliente = nomeCliente,
             telefoneCliente = telefoneCliente,
             imprimirDuasVias = imprimirDuasVias,
-            pedidos = pedidos
+            pedidos = pedidos,
+            entrega = parseEntrega(obj)
         )
     }
 }

@@ -134,7 +134,7 @@ class ServicoImpressao : Service() {
                     is ResultadoImpressao.Sucesso -> {
                         Log.i(TAG, "Pedido ${pedido.id} impresso com sucesso")
                         api.marcarPedidoImpresso(pedido.id)
-                        atualizarStatus("Última impressão: Mesa ${pedido.mesaNumero} ✓")
+                        atualizarStatus("Última impressão: ${pedido.rotulo()} ✓")
                     }
                     is ResultadoImpressao.Erro -> {
                         Log.e(TAG, "Erro ao imprimir: ${resultado.mensagem}")
