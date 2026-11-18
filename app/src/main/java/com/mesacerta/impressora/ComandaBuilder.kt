@@ -290,7 +290,14 @@ object ComandaBuilder {
             out.write(byteArrayOf(ESC.toByte(), 'E'.code.toByte(), 0))
 
             for ((chave, valor) in unidade.item.variacoes) {
-                escreverLinha(out, "  $chave: $valor")
+                if (chave == "Sem") {
+                    // Ingrediente tirado: sai em negrito pra cozinha não passar batido.
+                    out.write(byteArrayOf(ESC.toByte(), 'E'.code.toByte(), 1))
+                    escreverLinha(out, "  SEM: $valor")
+                    out.write(byteArrayOf(ESC.toByte(), 'E'.code.toByte(), 0))
+                } else {
+                    escreverLinha(out, "  $chave: $valor")
+                }
             }
             if (unidade.adicionais.isNotEmpty()) {
                 out.write(byteArrayOf(ESC.toByte(), 'E'.code.toByte(), 1))
