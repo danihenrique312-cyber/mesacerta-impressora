@@ -32,15 +32,19 @@ object ComandaBuilder {
         out.write(byteArrayOf(ESC.toByte(), '@'.code.toByte()))
         out.write(byteArrayOf(ESC.toByte(), '3'.code.toByte(), 45))
 
-        escreverViaCozinha(out, pedido)
-
-        // Só imprime a via do caixa se o restaurante tiver essa opção ligada
         if (pedido.imprimirDuasVias) {
+            escreverViaCozinha(out, pedido)
             // Espaço extra entre as vias (sem cortar aqui)
             repeat(LINHAS_ENTRE_VIAS) {
                 out.write('\n'.code)
             }
             escreverViaCaixa(out, pedido)
+        } else if (pedido.entrega != null) {
+            // 1 via só e pedido de casa: esse papel vai junto com o pedido pro
+            // motoboy, então sai tudo nele (itens, valores, endereço e troco).
+            escreverViaUnicaCasa(out, pedido)
+        } else {
+            escreverViaCozinha(out, pedido)
         }
 
         // Corte do papel só no final
@@ -81,18 +85,7 @@ object ComandaBuilder {
         var totalGeral = 0.0
         for (pedido in comanda.pedidos) {
             escreverLinha(out, "Pedido as ${horaDoPedido(pedido.criadoEm)}")
-            for (item in pedido.itens) {
-                val subtotal = item.preco * item.quantidade
-                totalGeral += subtotal
-                val linhaEsquerda = "${item.quantidade}x ${item.nome}"
-                escreverLinha(out, montarLinhaComPrecoAlinhado(linhaEsquerda, formatarPreco(subtotal)))
-                for ((chave, valor) in item.variacoes) {
-                    escreverLinha(out, "  $chave: $valor")
-                }
-                if (item.observacao.isNotBlank()) {
-                    escreverLinha(out, "  obs: ${item.observacao}")
-                }
-            }
+            totalGeral += escreverItensComPreco(out, pedido.itens, comDetalhes = true, destaque = false)
             escreverLinha(out, "")
         }
 
@@ -151,25 +144,181 @@ object ComandaBuilder {
         }
         escreverLinha(out, "-".repeat(LARGURA))
 
-        for (item in pedido.itens) {
+        for (grupo in agruparAdicionais(pedido.itens)) {
+            val item = grupo.item
             out.write(byteArrayOf(ESC.toByte(), 'E'.code.toByte(), 1))
             out.write(byteArrayOf(GS.toByte(), '!'.code.toByte(), 0x01))
             escreverLinha(out, "${item.quantidade}x ${item.nome}")
             out.write(byteArrayOf(GS.toByte(), '!'.code.toByte(), 0x00))
             out.write(byteArrayOf(ESC.toByte(), 'E'.code.toByte(), 0))
 
-            for ((chave, valor) in item.variacoes) {
-                escreverLinha(out, "  $chave: $valor")
-            }
-            if (item.observacao.isNotBlank()) {
-                escreverLinha(out, "  obs: ${item.observacao}")
-            }
+            escreverDetalhesDoItem(out, grupo)
             escreverLinha(out, "")
         }
 
         escreverLinha(out, "-".repeat(LARGURA))
         escreverLinha(out, horarioAgora())
     }
+
+    /**
+     * Via única do pedido de casa (quando o restaurante imprime só 1 via):
+     * itens com adicionais e preços, total, endereço, pagamento e troco.
+     */
+    private fun escreverViaUnicaCasa(out: ByteArrayOutputStream, pedido: Pedido) {
+        val entrega = pedido.entrega ?: return
+        out.write(byteArrayOf(ESC.toByte(), 'a'.code.toByte(), 1))
+        out.write(byteArrayOf(GS.toByte(), '!'.code.toByte(), 0x11))
+        escreverLinha(out, entrega.titulo())
+        out.write(byteArrayOf(GS.toByte(), '!'.code.toByte(), 0x00))
+        out.write(byteArrayOf(ESC.toByte(), 'E'.code.toByte(), 1))
+        escreverLinha(out, "VIA ÚNICA")
+        out.write(byteArrayOf(ESC.toByte(), 'E'.code.toByte(), 0))
+
+        out.write(byteArrayOf(ESC.toByte(), 'a'.code.toByte(), 0))
+        escreverDadosCliente(out, pedido)
+        escreverLinha(out, "-".repeat(LARGURA))
+
+        var total = escreverItensComPreco(out, pedido.itens, comDetalhes = true, destaque = true)
+
+        escreverLinha(out, "-".repeat(LARGURA))
+        if (entrega.taxaEntrega > 0) {
+            escreverLinha(out, montarLinhaComPrecoAlinhado("Subtotal", formatarPreco(total)))
+            escreverLinha(out, montarLinhaComPrecoAlinhado("Taxa de entrega", formatarPreco(entrega.taxaEntrega)))
+            total += entrega.taxaEntrega
+        }
+        out.write(byteArrayOf(ESC.toByte(), 'E'.code.toByte(), 1))
+        escreverLinha(out, montarLinhaComPrecoAlinhado("TOTAL", formatarPreco(total)))
+        out.write(byteArrayOf(ESC.toByte(), 'E'.code.toByte(), 0))
+        escreverLinha(out, "-".repeat(LARGURA))
+        escreverDadosEntrega(out, entrega, total)
+        escreverLinha(out, "-".repeat(LARGURA))
+        escreverLinha(out, horarioAgora())
+    }
+
+    /**
+     * Itens com preço alinhado na direita; adicionais embaixo do item ("+ Bacon").
+     * Devolve a soma de tudo. [destaque] deixa o nome do item em negrito e alto
+     * (pra cozinha ler de longe na via única).
+     */
+    private fun escreverItensComPreco(
+        out: ByteArrayOutputStream,
+        itens: List<ItemPedido>,
+        comDetalhes: Boolean,
+        destaque: Boolean
+    ): Double {
+        var total = 0.0
+        for (grupo in agruparAdicionais(itens)) {
+            val item = grupo.item
+            val subtotal = item.preco * item.quantidade
+            total += subtotal
+            if (destaque) {
+                out.write(byteArrayOf(ESC.toByte(), 'E'.code.toByte(), 1))
+                out.write(byteArrayOf(GS.toByte(), '!'.code.toByte(), 0x01))
+            }
+            escreverLinha(out, montarLinhaComPrecoAlinhado("${item.quantidade}x ${item.nome}", formatarPreco(subtotal)))
+            if (destaque) {
+                out.write(byteArrayOf(GS.toByte(), '!'.code.toByte(), 0x00))
+                out.write(byteArrayOf(ESC.toByte(), 'E'.code.toByte(), 0))
+            }
+            for (adicional in grupo.adicionais) {
+                val subtotalAdicional = adicional.item.preco * adicional.item.quantidade
+                total += subtotalAdicional
+                escreverLinha(
+                    out,
+                    montarLinhaComPrecoAlinhado("  ${textoAdicional(adicional)}", formatarPreco(subtotalAdicional))
+                )
+            }
+            if (comDetalhes) {
+                for ((chave, valor) in item.variacoes) {
+                    escreverLinha(out, "  $chave: $valor")
+                }
+                if (item.observacao.isNotBlank()) {
+                    escreverLinha(out, "  obs: ${item.observacao}")
+                }
+                if (destaque) escreverLinha(out, "")
+            }
+        }
+        return total
+    }
+
+    /** Variações, adicionais ("+ Bacon", em negrito) e observação, embaixo do item. */
+    private fun escreverDetalhesDoItem(out: ByteArrayOutputStream, grupo: ItemAgrupado) {
+        val item = grupo.item
+        for ((chave, valor) in item.variacoes) {
+            escreverLinha(out, "  $chave: $valor")
+        }
+        if (grupo.adicionais.isNotEmpty()) {
+            out.write(byteArrayOf(ESC.toByte(), 'E'.code.toByte(), 1))
+            for (adicional in grupo.adicionais) {
+                escreverLinha(out, "  ${textoAdicional(adicional)}")
+            }
+            out.write(byteArrayOf(ESC.toByte(), 'E'.code.toByte(), 0))
+        }
+        if (item.observacao.isNotBlank()) {
+            escreverLinha(out, "  obs: ${item.observacao}")
+        }
+    }
+
+    // ---- Adicionais ----------------------------------------------------------
+    // No pedido, cada adicional (bacon, catupiri...) é uma linha própria com a
+    // observação "Adicional de: <item>". No papel ele sai embaixo do item, como
+    // "+ Bacon", pra não parecer outro item ("1x Extra Bacon").
+
+    private const val PREFIXO_ADICIONAL = "Adicional de: "
+
+    private class AdicionalAgrupado(val item: ItemPedido, val nome: String, val detalhe: String)
+
+    private class ItemAgrupado(val item: ItemPedido, val adicionais: List<AdicionalAgrupado>)
+
+    private fun itemPaiDoAdicional(item: ItemPedido): String? {
+        if (!item.observacao.startsWith(PREFIXO_ADICIONAL)) return null
+        return item.observacao.removePrefix(PREFIXO_ADICIONAL).trim().ifEmpty { null }
+    }
+
+    /** "Extra Bacon - Médio" (do "Pastel de carne - Médio") vira "Bacon". */
+    private fun nomeCurtoAdicional(nome: String, nomePai: String): String {
+        var curto = nome.replace(Regex("^(extra|adicional)(\\s+de)?\\s+", RegexOption.IGNORE_CASE), "").trim()
+        val corte = nomePai.lastIndexOf(" - ")
+        if (corte >= 0) {
+            val sufixo = nomePai.substring(corte)
+            if (curto.lowercase().endsWith(sufixo.lowercase())) curto = curto.dropLast(sufixo.length).trim()
+        }
+        if (curto.isEmpty()) return nome
+        return curto.replaceFirstChar { it.uppercase() }
+    }
+
+    /**
+     * Junta cada adicional embaixo do item dele. Adicional sem o item no mesmo
+     * pedido continua saindo como linha normal (com a observação), pra não sumir.
+     */
+    private fun agruparAdicionais(itens: List<ItemPedido>): List<ItemAgrupado> {
+        val principais = itens.filter { itemPaiDoAdicional(it) == null }
+        val adicionaisPorPrincipal = principais.map { mutableListOf<AdicionalAgrupado>() }
+        val soltos = mutableListOf<ItemPedido>()
+        for (adicional in itens) {
+            val nomePai = itemPaiDoAdicional(adicional) ?: continue
+            val indice = principais.indexOfFirst { it.nome == nomePai }
+            if (indice < 0) {
+                soltos.add(adicional)
+                continue
+            }
+            val quantidadePai = principais[indice].quantidade
+            val detalhe = when {
+                adicional.quantidade == quantidadePai -> ""
+                adicional.quantidade < quantidadePai -> "em ${adicional.quantidade}"
+                else -> "x${adicional.quantidade}"
+            }
+            adicionaisPorPrincipal[indice].add(
+                AdicionalAgrupado(adicional, nomeCurtoAdicional(adicional.nome, nomePai), detalhe)
+            )
+        }
+        return principais.mapIndexed { i, item -> ItemAgrupado(item, adicionaisPorPrincipal[i]) } +
+            soltos.map { ItemAgrupado(it, emptyList()) }
+    }
+
+    /** "+ Bacon" ou "+ Bacon (em 2)" quando só parte dos itens leva. */
+    private fun textoAdicional(adicional: AdicionalAgrupado): String =
+        "+ ${adicional.nome}" + if (adicional.detalhe.isNotEmpty()) " (${adicional.detalhe})" else ""
 
     /**
      * Via do caixa: itens com preço de cada um, mais o total do pedido — pra cobrança.
@@ -188,14 +337,7 @@ object ComandaBuilder {
         escreverDadosCliente(out, pedido)
         escreverLinha(out, "-".repeat(LARGURA))
 
-        var total = 0.0
-        for (item in pedido.itens) {
-            val subtotal = item.preco * item.quantidade
-            total += subtotal
-            val linhaEsquerda = "${item.quantidade}x ${item.nome}"
-            val linhaDireita = formatarPreco(subtotal)
-            escreverLinha(out, montarLinhaComPrecoAlinhado(linhaEsquerda, linhaDireita))
-        }
+        var total = escreverItensComPreco(out, pedido.itens, comDetalhes = false, destaque = false)
 
         escreverLinha(out, "-".repeat(LARGURA))
         val entrega = pedido.entrega
