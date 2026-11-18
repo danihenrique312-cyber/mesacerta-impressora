@@ -144,17 +144,7 @@ object ComandaBuilder {
         }
         escreverLinha(out, "-".repeat(LARGURA))
 
-        for (grupo in agruparAdicionais(pedido.itens)) {
-            val item = grupo.item
-            out.write(byteArrayOf(ESC.toByte(), 'E'.code.toByte(), 1))
-            out.write(byteArrayOf(GS.toByte(), '!'.code.toByte(), 0x01))
-            escreverLinha(out, "${item.quantidade}x ${item.nome}")
-            out.write(byteArrayOf(GS.toByte(), '!'.code.toByte(), 0x00))
-            out.write(byteArrayOf(ESC.toByte(), 'E'.code.toByte(), 0))
-
-            escreverDetalhesDoItem(out, grupo)
-            escreverLinha(out, "")
-        }
+        escreverUnidadesCozinha(out, expandirUnidades(pedido.itens))
 
         escreverLinha(out, "-".repeat(LARGURA))
         escreverLinha(out, horarioAgora())
@@ -178,7 +168,7 @@ object ComandaBuilder {
         escreverDadosCliente(out, pedido)
         escreverLinha(out, "-".repeat(LARGURA))
 
-        var total = escreverItensComPreco(out, pedido.itens, comDetalhes = true, destaque = true)
+        var total = escreverUnidadesComPreco(out, pedido.itens)
 
         escreverLinha(out, "-".repeat(LARGURA))
         if (entrega.taxaEntrega > 0) {
@@ -241,22 +231,114 @@ object ComandaBuilder {
         return total
     }
 
-    /** Variações, adicionais ("+ Bacon", em negrito) e observação, embaixo do item. */
-    private fun escreverDetalhesDoItem(out: ByteArrayOutputStream, grupo: ItemAgrupado) {
-        val item = grupo.item
-        for ((chave, valor) in item.variacoes) {
-            escreverLinha(out, "  $chave: $valor")
-        }
-        if (grupo.adicionais.isNotEmpty()) {
-            out.write(byteArrayOf(ESC.toByte(), 'E'.code.toByte(), 1))
-            for (adicional in grupo.adicionais) {
-                escreverLinha(out, "  ${textoAdicional(adicional)}")
+    /** Um lanche avulso do pedido, com o tamanho separado do nome e os adicionais dele. */
+    private class Unidade(
+        val nome: String,
+        val tamanho: String?,
+        val item: ItemPedido,
+        val adicionais: List<AdicionalUnidade>
+    )
+
+    private class AdicionalUnidade(val nome: String, val quantidade: Int, val precoUnitario: Double)
+
+    /**
+     * Cada lanche sai numa linha própria (pro chapeiro montar um por um).
+     * Os adicionais vão logo abaixo de cada lanche, e o tamanho fica por último.
+     */
+    private fun expandirUnidades(itens: List<ItemPedido>): List<Unidade> {
+        val unidades = mutableListOf<Unidade>()
+        for (grupo in agruparAdicionais(itens)) {
+            val item = grupo.item
+            val (base, tamanho) = separarTamanho(item.nome)
+            for (indice in 0 until item.quantidade) {
+                val adicionais = mutableListOf<AdicionalUnidade>()
+                for (adicional in grupo.adicionais) {
+                    val total = adicional.item.quantidade
+                    // Um adicional por lanche, até acabar; se sobrar mais que os lanches, vai no primeiro.
+                    var quantidade = if (indice < total) 1 else 0
+                    if (indice == 0 && total > item.quantidade) quantidade += total - item.quantidade
+                    if (quantidade > 0) {
+                        adicionais.add(AdicionalUnidade(adicional.nome, quantidade, adicional.item.preco))
+                    }
+                }
+                unidades.add(Unidade(base, tamanho, item, adicionais))
             }
+        }
+        return unidades
+    }
+
+    /** "Pastel de carne - Médio" vira ("Pastel de carne", "Médio"). Sem " - ", o tamanho fica nulo. */
+    private fun separarTamanho(nome: String): Pair<String, String?> {
+        val corte = nome.lastIndexOf(" - ")
+        if (corte <= 0) return nome to null
+        val base = nome.substring(0, corte).trim()
+        val tamanho = nome.substring(corte + 3).trim()
+        if (base.isEmpty() || tamanho.isEmpty()) return nome to null
+        return base to tamanho
+    }
+
+    private fun textoAdicionalUnidade(adicional: AdicionalUnidade): String =
+        "+ ${adicional.nome}" + if (adicional.quantidade > 1) " x${adicional.quantidade}" else ""
+
+    /** Via da cozinha: uma linha por lanche, com adicionais em negrito logo abaixo e o tamanho no fim. */
+    private fun escreverUnidadesCozinha(out: ByteArrayOutputStream, unidades: List<Unidade>) {
+        for (unidade in unidades) {
+            out.write(byteArrayOf(ESC.toByte(), 'E'.code.toByte(), 1))
+            out.write(byteArrayOf(GS.toByte(), '!'.code.toByte(), 0x01))
+            escreverLinha(out, "1x ${unidade.nome}")
+            out.write(byteArrayOf(GS.toByte(), '!'.code.toByte(), 0x00))
             out.write(byteArrayOf(ESC.toByte(), 'E'.code.toByte(), 0))
+
+            for ((chave, valor) in unidade.item.variacoes) {
+                escreverLinha(out, "  $chave: $valor")
+            }
+            if (unidade.adicionais.isNotEmpty()) {
+                out.write(byteArrayOf(ESC.toByte(), 'E'.code.toByte(), 1))
+                for (adicional in unidade.adicionais) {
+                    escreverLinha(out, "  ${textoAdicionalUnidade(adicional)}")
+                }
+                out.write(byteArrayOf(ESC.toByte(), 'E'.code.toByte(), 0))
+            }
+            if (unidade.item.observacao.isNotBlank()) {
+                escreverLinha(out, "  obs: ${unidade.item.observacao}")
+            }
+            unidade.tamanho?.let { escreverLinha(out, "  Tamanho: $it") }
+            escreverLinha(out, "")
         }
-        if (item.observacao.isNotBlank()) {
-            escreverLinha(out, "  obs: ${item.observacao}")
+    }
+
+    /**
+     * Via única (pedido de casa): cada lanche com o preço dele, os adicionais com preço
+     * logo abaixo e o tamanho por último. Devolve a soma de tudo (lanches + adicionais).
+     */
+    private fun escreverUnidadesComPreco(out: ByteArrayOutputStream, itens: List<ItemPedido>): Double {
+        var total = 0.0
+        for (unidade in expandirUnidades(itens)) {
+            total += unidade.item.preco
+            out.write(byteArrayOf(ESC.toByte(), 'E'.code.toByte(), 1))
+            out.write(byteArrayOf(GS.toByte(), '!'.code.toByte(), 0x01))
+            escreverLinha(out, montarLinhaComPrecoAlinhado("1x ${unidade.nome}", formatarPreco(unidade.item.preco)))
+            out.write(byteArrayOf(GS.toByte(), '!'.code.toByte(), 0x00))
+            out.write(byteArrayOf(ESC.toByte(), 'E'.code.toByte(), 0))
+
+            for ((chave, valor) in unidade.item.variacoes) {
+                escreverLinha(out, "  $chave: $valor")
+            }
+            for (adicional in unidade.adicionais) {
+                val subtotal = adicional.precoUnitario * adicional.quantidade
+                total += subtotal
+                escreverLinha(
+                    out,
+                    montarLinhaComPrecoAlinhado("  ${textoAdicionalUnidade(adicional)}", formatarPreco(subtotal))
+                )
+            }
+            if (unidade.item.observacao.isNotBlank()) {
+                escreverLinha(out, "  obs: ${unidade.item.observacao}")
+            }
+            unidade.tamanho?.let { escreverLinha(out, "  Tamanho: $it") }
+            escreverLinha(out, "")
         }
+        return total
     }
 
     // ---- Adicionais ----------------------------------------------------------
