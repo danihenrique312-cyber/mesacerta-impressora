@@ -213,10 +213,12 @@ object ComandaBuilder {
             for (adicional in grupo.adicionais) {
                 val subtotalAdicional = adicional.item.preco * adicional.item.quantidade
                 total += subtotalAdicional
+                tamanhoDetalhe(out, true)
                 escreverLinha(
                     out,
                     montarLinhaComPrecoAlinhado("  ${textoAdicional(adicional)}", formatarPreco(subtotalAdicional))
                 )
+                tamanhoDetalhe(out, false)
             }
             if (comDetalhes) {
                 for ((chave, valor) in item.variacoes) {
@@ -289,6 +291,8 @@ object ComandaBuilder {
             out.write(byteArrayOf(GS.toByte(), '!'.code.toByte(), 0x00))
             out.write(byteArrayOf(ESC.toByte(), 'E'.code.toByte(), 0))
 
+            // Detalhes do lanche (SEM, variações, adicionais, obs, tamanho) em tamanho maior.
+            tamanhoDetalhe(out, true)
             for ((chave, valor) in unidade.item.variacoes) {
                 if (chave == "Sem") {
                     // Ingrediente tirado: sai em negrito pra cozinha não passar batido.
@@ -310,6 +314,7 @@ object ComandaBuilder {
                 escreverLinha(out, "  obs: ${unidade.item.observacao}")
             }
             unidade.tamanho?.let { escreverLinha(out, "  Tamanho: $it") }
+            tamanhoDetalhe(out, false)
             escreverLinha(out, "")
         }
     }
@@ -328,6 +333,8 @@ object ComandaBuilder {
             out.write(byteArrayOf(GS.toByte(), '!'.code.toByte(), 0x00))
             out.write(byteArrayOf(ESC.toByte(), 'E'.code.toByte(), 0))
 
+            // Detalhes do lanche em tamanho maior, como na via da cozinha.
+            tamanhoDetalhe(out, true)
             for ((chave, valor) in unidade.item.variacoes) {
                 escreverLinha(out, "  $chave: $valor")
             }
@@ -343,6 +350,7 @@ object ComandaBuilder {
                 escreverLinha(out, "  obs: ${unidade.item.observacao}")
             }
             unidade.tamanho?.let { escreverLinha(out, "  Tamanho: $it") }
+            tamanhoDetalhe(out, false)
             escreverLinha(out, "")
         }
         return total
@@ -512,6 +520,15 @@ object ComandaBuilder {
         } else {
             esquerda + " ".repeat(espacoDisponivel - esquerda.length) + direita
         }
+    }
+
+    /**
+     * Liga/desliga o tamanho grande nas linhas de detalhe (adicionais, SEM, obs, tamanho).
+     * Dobra só a altura da letra: a largura continua de 32 colunas, então as linhas
+     * com preço continuam alinhadas e não quebram.
+     */
+    private fun tamanhoDetalhe(out: ByteArrayOutputStream, ligado: Boolean) {
+        out.write(byteArrayOf(GS.toByte(), '!'.code.toByte(), (if (ligado) 1 else 0).toByte()))
     }
 
     /**
