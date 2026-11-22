@@ -16,6 +16,9 @@ object Config {
     const val PREF_RESTAURANTE_SLUG = "restaurante_slug"
     const val PREF_CHAVE_EQUIPE = "chave_equipe"
     const val PREF_SERVICO_ATIVO = "servico_ativo"
+    // Hora (em ms) do último contato bem-sucedido com o servidor. Usada ao reiniciar o app
+    // para retomar de onde parou, sem deixar pedido sem imprimir.
+    const val PREF_ULTIMO_CONTATO_MS = "ultimo_contato_ms"
 
     // Canal de notificação do serviço em primeiro plano
     const val CANAL_ID = "mesacerta_impressao"

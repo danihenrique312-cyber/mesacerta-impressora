@@ -16,30 +16,59 @@ import org.json.JSONObject
 
 /**
  * O coração do app: fica rodando SEMPRE em segundo plano.
- * - Escuta pedidos novos no banco (mesmo com a tela apagada) → impressão automática
+ * - Escuta pedidos novos no banco (mesmo com a tela apagada) e imprime sozinho.
+ *   Se a impressora falhar, tenta de novo com espera crescente. Se desistir, o pedido
+ *   continua "sem impressão" no painel, e dá pra reimprimir de lá.
  * - Escuta solicitações de impressão manual vindas do site (imprimir comanda
  *   completa, ou reimprimir um pedido específico que não saiu)
+ * - Manda ao servidor o que aconteceu (imprimiu, falhou, perdeu a conexão...), para o
+ *   painel de saúde mostrar o histórico de cada estabelecimento
  * - Mantém uma notificação fixa (exigência do Android para serviços que rodam sempre)
  */
 class ServicoImpressao : Service() {
 
     companion object {
         private const val TAG = "MesaCertaServico"
+        private const val MINUTO_MS = 60_000L
+        private const val HORA_MS = 60L * MINUTO_MS
+        // Eventos guardados sem internet: no máximo essa quantidade (os mais antigos saem primeiro).
+        private const val MAX_EVENTOS_PENDENTES = 300
+        // Eventos enviados por volta da consulta (para não travar a fila de pedidos).
+        private const val EVENTOS_POR_VOLTA = 20
+
         @Volatile var rodando = false
             private set
         var ultimoStatus = "Iniciando..."
             private set
     }
 
+    /** Evento que ainda não foi confirmado pelo servidor. */
+    private class EventoPendente(
+        val tipo: String,
+        val pedidoId: String?,
+        val detalhe: String,
+        val ocorreuEm: Long
+    )
+
     private var threadFila: Thread? = null
     // Imprime um de cada vez (Bluetooth não aceita duas impressões ao mesmo tempo).
     private val filaImpressao = java.util.concurrent.Executors.newSingleThreadExecutor()
-    // Cada pedido/solicitação é tentado só uma vez por execução (se falhar, aparece
-    // como NÃO IMPRESSO no painel e dá pra reimprimir de lá).
-    private val jaTentados = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+    // O que já foi tentado, quando tentar de novo e o que foi desistido (ver ControleImpressao).
+    private val controle = ControleImpressao()
+    // Solicitações manuais já processadas nesta execução (não repete a mesma).
+    private val solicitacoesVistas = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+    // Eventos que o servidor ainda não confirmou. Quem envia é a thread de consulta.
+    private val eventos = java.util.concurrent.ConcurrentLinkedQueue<EventoPendente>()
     private val api = SupabaseApi()
     private var wakeLock: PowerManager.WakeLock? = null
     private var impressora: ImpressoraBluetooth? = null
+
+    // Estado da consulta ao servidor (só a thread de consulta mexe aqui).
+    private var ultimoOk = false
+    private var falhasSeguidas = 0
+    private var semContato = false
+    private var ultimoContatoGravado = 0L
+    private var primeiraFalhaEm = 0L
 
     override fun onCreate() {
         super.onCreate()
@@ -74,78 +103,176 @@ class ServicoImpressao : Service() {
         }
         api.configurar(slug, chave)
 
-        // Só imprime pedidos criados depois de ligar (menos 2 min de folga), pra
-        // não despejar pedidos antigos na impressora.
-        val desde = java.time.Instant.now().minusSeconds(120).toString()
+        // De onde olhar os pedidos: desde o último contato com o servidor (com 1 min de folga),
+        // no máximo 3 h para trás. Na primeira vez, só os últimos 2 min, para não despejar histórico.
+        val agora = System.currentTimeMillis()
+        val ultimoContato = prefs.getLong(Config.PREF_ULTIMO_CONTATO_MS, 0L)
+        val inicio = if (ultimoContato <= 0L) {
+            agora - 2 * MINUTO_MS
+        } else {
+            maxOf(ultimoContato - MINUTO_MS, agora - 3 * HORA_MS)
+        }
+        val desde = formatarIsoUtc(inicio)
 
         threadFila?.interrupt()
         threadFila = Thread {
-            var ultimoOk = false
+            registrarEvento("app_iniciou", null, "Serviço iniciado")
             while (rodando) {
-                val (acesso, fila) = api.buscarFila(desde)
-                when (acesso) {
-                    is SupabaseApi.ResultadoAcesso.Ok -> {
-                        if (!ultimoOk) atualizarStatus("Conectado, aguardando pedidos")
-                        ultimoOk = true
-                        fila?.pedidos?.forEach { id -> if (jaTentados.add("p:$id")) processarPedido(id) }
-                        fila?.solicitacoes?.forEach { sol ->
-                            if (jaTentados.add("s:" + sol.optString("id"))) processarSolicitacao(sol)
-                        }
-                    }
-                    is SupabaseApi.ResultadoAcesso.CodigoInvalido -> {
-                        atualizarStatus("Restaurante ou código incorreto. Confira o slug e o código no painel (QR da cozinha).")
-                        ultimoOk = false
-                    }
-                    is SupabaseApi.ResultadoAcesso.ErroHttp -> {
-                        atualizarStatus("Servidor com problema (erro ${acesso.codigo}). Tentando de novo...")
-                        ultimoOk = false
-                    }
-                    is SupabaseApi.ResultadoAcesso.SemRede -> {
-                        atualizarStatus("Sem internet. Tentando de novo...")
-                        ultimoOk = false
-                    }
-                }
+                consultarFila(desde)
+                enviarEventosPendentes()
                 try { Thread.sleep(3000) } catch (e: InterruptedException) { break }
             }
         }.also { it.start() }
     }
 
+    /** Uma volta da consulta: pergunta ao servidor o que há para imprimir e agenda o que for preciso. */
+    private fun consultarFila(desde: String) {
+        val (acesso, fila) = api.buscarFila(desde, controle.ignorados())
+        when (acesso) {
+            is SupabaseApi.ResultadoAcesso.Ok -> {
+                if (semContato) {
+                    val minutos = maxOf(1L, (System.currentTimeMillis() - primeiraFalhaEm) / MINUTO_MS)
+                    registrarEvento("conexao_restaurada", null, "Ficou sem contato por $minutos min")
+                    semContato = false
+                }
+                falhasSeguidas = 0
+                registrarContato()
+                if (!ultimoOk) atualizarStatus("Conectado, aguardando pedidos")
+                ultimoOk = true
+                fila?.pedidos?.forEach { id -> if (controle.podeAgendar(id)) agendarImpressao(id) }
+                fila?.solicitacoes?.forEach { sol ->
+                    if (solicitacoesVistas.add("s:" + sol.optString("id"))) processarSolicitacao(sol)
+                }
+            }
+            is SupabaseApi.ResultadoAcesso.CodigoInvalido -> {
+                atualizarStatus("Restaurante ou código incorreto. Confira o slug e o código no painel (QR da cozinha).")
+                ultimoOk = false
+            }
+            is SupabaseApi.ResultadoAcesso.ErroHttp ->
+                falhaDeContato("Servidor com problema (erro ${acesso.codigo})")
+            is SupabaseApi.ResultadoAcesso.SemRede ->
+                falhaDeContato("Sem internet")
+        }
+    }
+
+    /** A consulta ao servidor falhou. Depois de algumas seguidas, avisa o painel (uma vez só). */
+    private fun falhaDeContato(motivo: String) {
+        falhasSeguidas++
+        if (falhasSeguidas == 1) primeiraFalhaEm = System.currentTimeMillis()
+        ultimoOk = false
+        atualizarStatus("$motivo. Tentando de novo...")
+        if (!semContato && falhasSeguidas >= 3) {
+            semContato = true
+            // A hora do evento é a da primeira falha, não a de agora (o painel mostra quando caiu).
+            registrarEvento("conexao_perdida", null, motivo, primeiraFalhaEm)
+        }
+    }
+
+    /** Guarda a hora do último contato com o servidor (no máximo a cada 30 s). */
+    private fun registrarContato() {
+        val agora = System.currentTimeMillis()
+        if (agora - ultimoContatoGravado < 30_000L) return
+        ultimoContatoGravado = agora
+        getSharedPreferences(Config.PREF_NOME, Context.MODE_PRIVATE)
+            .edit()
+            .putLong(Config.PREF_ULTIMO_CONTATO_MS, agora)
+            .apply()
+    }
+
+    /** Põe um pedido na fila de impressão (roda na thread de impressão, um de cada vez). */
+    private fun agendarImpressao(idPedido: String) {
+        controle.agendado(idPedido)
+        try {
+            filaImpressao.execute { processarPedido(idPedido) }
+        } catch (e: java.util.concurrent.RejectedExecutionException) {
+            // Serviço já encerrado: não há o que fazer.
+            controle.liberar(idPedido)
+        }
+    }
+
     /**
-     * Impressão AUTOMÁTICA: dispara sozinha quando um pedido novo chega.
+     * Impressão AUTOMÁTICA de um pedido. Se der certo, marca como impresso. Se falhar,
+     * `falhouImpressao` decide quando tentar de novo (a consulta agenda de novo nessa hora).
      */
     private fun processarPedido(idPedido: String) {
-        filaImpressao.execute {
-            try {
-                atualizarStatus("Imprimindo pedido...")
-                // Pequena espera pra garantir que os itens já foram salvos no banco
-                Thread.sleep(1200)
-
-                val pedido = api.buscarPedido(idPedido)
-                if (pedido == null) {
-                    Log.w(TAG, "Pedido $idPedido não encontrado")
-                    atualizarStatus("Ativo — aguardando pedidos")
-                    return@execute
-                }
-
-                val dados = ComandaBuilder.montarComanda(pedido)
-                val resultado = impressora?.imprimir(dados)
-
-                when (resultado) {
-                    is ResultadoImpressao.Sucesso -> {
-                        Log.i(TAG, "Pedido ${pedido.id} impresso com sucesso")
-                        api.marcarPedidoImpresso(pedido.id)
-                        atualizarStatus("Última impressão: ${pedido.rotulo()} ✓")
-                    }
-                    is ResultadoImpressao.Erro -> {
-                        Log.e(TAG, "Erro ao imprimir: ${resultado.mensagem}")
-                        atualizarStatus("Erro: ${resultado.mensagem}")
-                    }
-                    null -> atualizarStatus("Impressora não configurada")
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Erro ao processar pedido", e)
-                atualizarStatus("Erro ao processar pedido")
+        var rotulo: String? = null
+        try {
+            if (controle.jaImpresso(idPedido)) {
+                // Já saiu na impressora numa tentativa anterior: só falta o servidor confirmar.
+                confirmarImpressao(idPedido, null)
+                return
             }
+            atualizarStatus("Imprimindo pedido...")
+            // Pequena espera pra garantir que os itens já foram salvos no banco
+            Thread.sleep(1200)
+
+            val pedido = api.buscarPedido(idPedido)
+            if (pedido == null) {
+                // Não existe mais (ou não é deste restaurante): não há o que imprimir.
+                Log.w(TAG, "Pedido $idPedido não encontrado")
+                controle.concluir(idPedido)
+                return
+            }
+            val nomePedido = pedido.rotulo()
+            rotulo = nomePedido
+
+            val dados = ComandaBuilder.montarComanda(pedido)
+            when (val resultado = impressora?.imprimir(dados)) {
+                is ResultadoImpressao.Sucesso -> {
+                    Log.i(TAG, "Pedido ${pedido.id} impresso com sucesso")
+                    controle.marcarImpresso(idPedido)
+                    registrarEvento("imprimiu", idPedido, nomePedido)
+                    atualizarStatus("Última impressão: $nomePedido ✓")
+                    confirmarImpressao(idPedido, nomePedido)
+                }
+                is ResultadoImpressao.Erro -> {
+                    Log.e(TAG, "Erro ao imprimir: ${resultado.mensagem}")
+                    falhouImpressao(idPedido, rotulo, resultado.mensagem)
+                }
+                null -> falhouImpressao(idPedido, rotulo, "impressora não configurada")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Erro ao processar pedido", e)
+            falhouImpressao(idPedido, rotulo, e.message?.take(120) ?: "erro inesperado")
+        } finally {
+            controle.liberar(idPedido)
+        }
+    }
+
+    /** Uma tentativa de impressão falhou: registra, agenda a próxima ou desiste. */
+    private fun falhouImpressao(idPedido: String, rotulo: String?, motivo: String) {
+        val quem = rotulo ?: "Pedido"
+        when (val decisao = controle.registrarFalha(idPedido)) {
+            is ControleImpressao.DepoisDaFalha.Tentar -> {
+                val esperaSeg = decisao.esperaMs / 1000
+                registrarEvento(
+                    "falhou",
+                    idPedido,
+                    "$quem: tentativa ${decisao.tentativa} de ${ControleImpressao.MAX_TENTATIVAS} falhou ($motivo). Nova tentativa em $esperaSeg s."
+                )
+                atualizarStatus("Não consegui imprimir ($motivo). Tentando de novo.")
+            }
+            is ControleImpressao.DepoisDaFalha.Desistir -> {
+                registrarEvento(
+                    "desistiu",
+                    idPedido,
+                    "$quem: desistiu depois de ${decisao.tentativas} tentativas ($motivo). Fica sem impressão até reimprimir pelo painel."
+                )
+                atualizarStatus("Pedido sem impressão: reimprima pelo painel.")
+            }
+        }
+    }
+
+    /** Pede ao servidor para marcar o pedido como impresso. Se ele não confirmar, repete depois, sem imprimir de novo. */
+    private fun confirmarImpressao(idPedido: String, nomePedido: String?) {
+        if (api.marcarPedidoImpresso(idPedido)) {
+            controle.concluir(idPedido)
+        } else if (controle.adiarConfirmacao(idPedido)) {
+            registrarEvento(
+                "marcacao_falhou",
+                idPedido,
+                "${nomePedido ?: "Pedido"}: saiu na impressora, mas o servidor não confirmou. Vai tentar de novo."
+            )
         }
     }
 
@@ -206,6 +333,28 @@ class ServicoImpressao : Service() {
                 api.marcarSolicitacaoStatus(solicitacaoId, "erro")
                 atualizarStatus("Erro ao processar solicitação")
             }
+        }
+    }
+
+    /** Guarda um evento para enviar ao servidor. Sem internet, ele espera e sai depois, com a hora em que aconteceu. */
+    private fun registrarEvento(
+        tipo: String,
+        pedidoId: String?,
+        detalhe: String,
+        ocorreuEm: Long = System.currentTimeMillis()
+    ) {
+        eventos.add(EventoPendente(tipo, pedidoId, detalhe.take(300), ocorreuEm))
+        while (eventos.size > MAX_EVENTOS_PENDENTES) eventos.poll()
+    }
+
+    /** Manda os eventos guardados, na ordem. Para no primeiro que falhar (tenta de novo na próxima volta). */
+    private fun enviarEventosPendentes() {
+        var enviados = 0
+        while (enviados < EVENTOS_POR_VOLTA) {
+            val evento = eventos.peek() ?: return
+            if (!api.enviarEvento(evento.tipo, evento.pedidoId, evento.detalhe, evento.ocorreuEm)) return
+            eventos.poll()
+            enviados++
         }
     }
 
