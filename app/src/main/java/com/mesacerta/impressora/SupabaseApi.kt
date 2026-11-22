@@ -89,9 +89,18 @@ class SupabaseApi {
     }
 
 
-    /** Pergunta ao servidor o que há pra imprimir (também serve pra validar o código). */
-    fun buscarFila(desdeIso: String): Pair<ResultadoAcesso, Fila?> {
-        val r = chamar("fila", JSONObject().put("desde", desdeIso))
+    /**
+     * Pergunta ao servidor o que há pra imprimir (também serve pra validar o código).
+     * `ignorar`: pedidos que o app já desistiu de imprimir. O servidor não manda esses de novo.
+     */
+    fun buscarFila(desdeIso: String, ignorar: List<String> = emptyList()): Pair<ResultadoAcesso, Fila?> {
+        val extras = JSONObject().put("desde", desdeIso)
+        if (ignorar.isNotEmpty()) {
+            val lista = JSONArray()
+            ignorar.forEach { lista.put(it) }
+            extras.put("ignorar", lista)
+        }
+        val r = chamar("fila", extras)
         if (r.semRede) return ResultadoAcesso.SemRede to null
         if (r.codigo == 401) return ResultadoAcesso.CodigoInvalido to null
         val corpo = r.corpo
@@ -106,9 +115,20 @@ class SupabaseApi {
         return ResultadoAcesso.Ok to Fila(ids, sols)
     }
 
+    /**
+     * Dados de um pedido para imprimir. Devolve null se o pedido não existe mais.
+     * Lança IOException se não deu para falar com o servidor: aí o app tenta de novo depois,
+     * em vez de tratar como "pedido apagado" e largar o pedido.
+     */
+    @Throws(java.io.IOException::class)
     fun buscarPedido(idPedido: String): Pedido? {
         val r = chamar("pedido", JSONObject().put("id", idPedido))
-        val dados = r.corpo?.optJSONObject("dados") ?: return null
+        val corpo = r.corpo
+        if (r.semRede || r.codigo != 200 || corpo == null) {
+            val motivo = if (r.semRede) "sem internet" else "erro ${r.codigo}"
+            throw java.io.IOException("servidor não respondeu direito ($motivo)")
+        }
+        val dados = corpo.optJSONObject("dados") ?: return null
         return parsePedido(dados)
     }
 
@@ -118,10 +138,24 @@ class SupabaseApi {
         return parseComanda(dados)
     }
 
-    /** Marca um pedido como impresso (pra não aparecer mais como "pendente de impressão"). */
-    fun marcarPedidoImpresso(pedidoId: String) {
+    /**
+     * Marca um pedido como impresso (para não aparecer mais como "pendente de impressão").
+     * Devolve false se o servidor não confirmou.
+     */
+    fun marcarPedidoImpresso(pedidoId: String): Boolean {
         val r = chamar("marcar_pedido", JSONObject().put("id", pedidoId))
         if (r.codigo != 200) Log.e(TAG, "Falha ao marcar pedido impresso (${r.codigo})")
+        return r.codigo == 200
+    }
+
+    /** Manda um evento da impressora ao servidor (aparece no painel de saúde). Devolve false se não foi aceito. */
+    fun enviarEvento(tipo: String, pedidoId: String?, detalhe: String, ocorreuEm: Long): Boolean {
+        val extras = JSONObject()
+            .put("tipo", tipo)
+            .put("detalhe", detalhe)
+            .put("ocorreu_em", formatarIsoUtc(ocorreuEm))
+        if (pedidoId != null) extras.put("pedido_id", pedidoId)
+        return chamar("evento", extras).codigo == 200
     }
 
     /** Marca uma solicitação de impressão manual como processada (impresso ou erro). */
