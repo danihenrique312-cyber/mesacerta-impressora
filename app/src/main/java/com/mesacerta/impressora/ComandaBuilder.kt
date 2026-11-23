@@ -205,7 +205,7 @@ object ComandaBuilder {
                 out.write(byteArrayOf(ESC.toByte(), 'E'.code.toByte(), 1))
                 out.write(byteArrayOf(GS.toByte(), '!'.code.toByte(), 0x01))
             }
-            escreverLinha(out, montarLinhaComPrecoAlinhado("${item.quantidade}x ${item.nome}", formatarPreco(subtotal)))
+            escreverLinha(out, montarLinhaComPrecoAlinhado("${item.quantidade} ${item.nome}", formatarPreco(subtotal)))
             if (destaque) {
                 out.write(byteArrayOf(GS.toByte(), '!'.code.toByte(), 0x00))
                 out.write(byteArrayOf(ESC.toByte(), 'E'.code.toByte(), 0))
@@ -280,14 +280,14 @@ object ComandaBuilder {
     }
 
     private fun textoAdicionalUnidade(adicional: AdicionalUnidade): String =
-        "+ ${adicional.nome}" + if (adicional.quantidade > 1) " x${adicional.quantidade}" else ""
+        "+ ${adicional.nome}" + if (adicional.quantidade > 1) " (${adicional.quantidade} un)" else ""
 
     /** Via da cozinha: uma linha por lanche, com adicionais em negrito logo abaixo e o tamanho no fim. */
     private fun escreverUnidadesCozinha(out: ByteArrayOutputStream, unidades: List<Unidade>) {
         for (unidade in unidades) {
             out.write(byteArrayOf(ESC.toByte(), 'E'.code.toByte(), 1))
             out.write(byteArrayOf(GS.toByte(), '!'.code.toByte(), 0x01))
-            escreverLinha(out, "1x ${unidade.nome}")
+            escreverLinha(out, "1 ${unidade.nome}")
             out.write(byteArrayOf(GS.toByte(), '!'.code.toByte(), 0x00))
             out.write(byteArrayOf(ESC.toByte(), 'E'.code.toByte(), 0))
 
@@ -329,7 +329,7 @@ object ComandaBuilder {
             total += unidade.item.preco
             out.write(byteArrayOf(ESC.toByte(), 'E'.code.toByte(), 1))
             out.write(byteArrayOf(GS.toByte(), '!'.code.toByte(), 0x01))
-            escreverLinha(out, montarLinhaComPrecoAlinhado("1x ${unidade.nome}", formatarPreco(unidade.item.preco)))
+            escreverLinha(out, montarLinhaComPrecoAlinhado("1 ${unidade.nome}", formatarPreco(unidade.item.preco)))
             out.write(byteArrayOf(GS.toByte(), '!'.code.toByte(), 0x00))
             out.write(byteArrayOf(ESC.toByte(), 'E'.code.toByte(), 0))
 
@@ -359,7 +359,7 @@ object ComandaBuilder {
     // ---- Adicionais ----------------------------------------------------------
     // No pedido, cada adicional (bacon, catupiri...) é uma linha própria com a
     // observação "Adicional de: <item>". No papel ele sai embaixo do item, como
-    // "+ Bacon", pra não parecer outro item ("1x Extra Bacon").
+    // "+ Bacon", pra não parecer outro item ("1 Extra Bacon").
 
     private const val PREFIXO_ADICIONAL = "Adicional de: "
 
@@ -403,7 +403,7 @@ object ComandaBuilder {
             val detalhe = when {
                 adicional.quantidade == quantidadePai -> ""
                 adicional.quantidade < quantidadePai -> "em ${adicional.quantidade}"
-                else -> "x${adicional.quantidade}"
+                else -> "${adicional.quantidade} un"
             }
             adicionaisPorPrincipal[indice].add(
                 AdicionalAgrupado(adicional, nomeCurtoAdicional(adicional.nome, nomePai), detalhe)
